@@ -4,8 +4,8 @@ from telethon import TelegramClient, events
 import subprocess
 
 # === CONFIG ===
-API_ID = 1234567 # Apna daal
-API_HASH = 'your_api_hash'
+API_ID = 37785994 # Apna daal
+API_HASH = '8037023119:AAGsH3DtPiIDQbovREgXFCkjKvXE8-E0-BA'
 BOT_TOKEN = 'your_bot_token'
 BOT_PASSWORD = "Wasi123"
 
