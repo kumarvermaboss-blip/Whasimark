@@ -1,6 +1,7 @@
 import os
 import asyncio
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError # NEW
 import subprocess
 
 API_ID = int(os.environ.get("API_ID"))
@@ -18,7 +19,7 @@ processing = set()
 semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 cancel_flags = {}
 AUTHORIZED_USERS = set()
-PENDING_STATES = {} # NEW: Step-by-step ke liye
+PENDING_STATES = {}
 
 # Default Settings
 CURRENT_WATERMARK = WATERMARK
@@ -41,7 +42,10 @@ async def worker():
                 await process_video(event)
             except Exception as e:
                 if event.id not in cancel_flags and "Cancelled" not in str(e):
-                    await event.reply(f"❌ Error: {str(e)[:100]}")
+                    try:
+                        await event.reply(f"❌ Error: {str(e)[:100]}")
+                    except:
+                        pass
             finally:
                 processing.discard(event.id)
                 if event.id in cancel_flags:
@@ -52,18 +56,21 @@ async def progress_callback(current, total, msg, action, event_id):
     if event_id in cancel_flags:
         raise Exception("Cancelled by user")
     percent = int(current * 100 / total)
-    if percent % 10 == 0 or percent == 100:
+    if percent % 20 == 0 or percent == 100: # 10% se 20% kar diya - kam spam
         try:
             await msg.edit(f"{action} {percent}%")
         except:
             pass
 
 async def process_video(event):
-    msg = await event.reply(f"⏳ Queue me #{len(processing)+1} | Starting...")
+    msg = None
     file = None
     output = None
 
     try:
+        msg = await event.reply(f"⏳ Processing...")
+        await asyncio.sleep(1) # NEW: Rate limit se bachne ke liye
+
         file = await event.download_media(
             progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id)
         )
@@ -71,7 +78,7 @@ async def process_video(event):
         if event.id in cancel_flags:
             raise Exception("Cancelled")
 
-        await msg.edit("🎬 Processing...")
+        await msg.edit("🎬 Watermark laga rahe...")
 
         # FILENAME LOGIC
         if NAME_MODE == "original":
@@ -121,11 +128,20 @@ async def process_video(event):
 
         await msg.delete()
 
+    except FloodWaitError as e: # NEW: Telegram limit handle
+        wait_time = e.seconds
+        if msg:
+            await msg.edit(f"⏳ Telegram limit: {wait_time}s wait kar raha hu...")
+        await asyncio.sleep(wait_time)
+        if msg:
+            await msg.edit("✅ Ab dobara video bhejo")
+
     except Exception as e:
-        if "Cancelled" in str(e):
-            await msg.edit("🚫 Cancelled")
-        else:
-            await msg.edit(f"❌ Failed: {str(e)[:100]}")
+        if msg:
+            if "Cancelled" in str(e):
+                await msg.edit("🚫 Cancelled")
+            else:
+                await msg.edit(f"❌ Failed: {str(e)[:100]}")
     finally:
         try:
             if file and os.path.exists(file):
@@ -148,7 +164,6 @@ async def login_handler(event):
     else:
         await event.reply('❌ Galat password.')
 
-# === STEP-BY-STEP COMMANDS ===
 @client.on(events.NewMessage(pattern='/(set|color|delete|setname)'))
 async def command_handler(event):
     if event.sender_id not in AUTHORIZED_USERS:
@@ -157,13 +172,11 @@ async def command_handler(event):
 
     cmd = event.text.split()[0][1:]
 
-    # Direct mode - agar value di hai
     if len(event.text.split()) > 1:
         value = event.text[len(cmd)+2:].strip()
         await set_value(event, cmd, value)
         return
 
-    # Step-by-step mode
     PENDING_STATES[event.sender_id] = cmd
 
     prompts = {
@@ -174,7 +187,6 @@ async def command_handler(event):
     }
     await event.reply(prompts.get(cmd))
 
-# === REPLY HANDLER ===
 @client.on(events.NewMessage(func=lambda e: e.sender_id in PENDING_STATES and not e.text.startswith('/')))
 async def input_handler(event):
     if event.sender_id not in PENDING_STATES:
@@ -194,7 +206,6 @@ async def input_handler(event):
 
     await set_value(event, state, value)
 
-# === SET VALUE FUNCTION ===
 async def set_value(event, cmd, value):
     global CURRENT_WATERMARK, CURRENT_COLOR, DELETE_ORIGINAL, NAME_MODE, CUSTOM_PREFIX
 
@@ -312,7 +323,7 @@ async def help_handler(event):
         "**🔐 Auth:**\n"
         "`/login` - Bot unlock karo\n"
         "`/logout` - Bot lock karo\n\n"
-        "**⚙️ Settings - Step-by-step ya Direct:**\n"
+        "**⚙️ Settings:**\n"
         "`/set` - Watermark text\n"
         "`/color` - Color + opacity\n"
         "`/dark` - Dark watermark\n"
@@ -323,8 +334,7 @@ async def help_handler(event):
         "**📋 Queue:**\n"
         "`/cancel` - Sab cancel karo\n"
         "Reply + `/cancel` - 1 video cancel\n\n"
-        "**📹 Video bhejo** - Watermark lag jayega\n\n"
-        "**Tip:** Commands akelay likho to bot poochega, ya `/set @Text` direct bhi chalega"
+        "**📹 Video bhejo** - Watermark lag jayega"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
@@ -335,12 +345,14 @@ async def handle_video(event):
 
     await queue.put(event)
     pos = queue.qsize() + len(processing)
-    if pos > 1:
+    # Queue message spam fix - sirf 2 se zyada pe bhej
+    if pos > 2:
         await event.reply(f"⏳ **Queue #{pos-1}** - Waiting...")
+        await asyncio.sleep(1) # Rate limit bachao
 
 async def main():
     print("="*50)
-    print("WATERMARK BOT - RAILWAY VERSION")
+    print("WATERMARK BOT - FIXED VERSION")
     print("="*50)
     print(f"Password: {BOT_PASSWORD}")
     print(f"Watermark: {CURRENT_WATERMARK}")
