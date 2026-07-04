@@ -9,7 +9,9 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 BOT_PASSWORD = os.environ.get("BOT_PASSWORD")
-BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL", None)
+BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL") # <-- FIX: None nahi, direct lo
+if BACKUP_CHANNEL: BACKUP_CHANNEL = int(BACKUP_CHANNEL) # <-- NAYA: String ko int me convert
+
 WATERMARK = os.environ.get("WATERMARK", "@bvsrv1")
 FONT_FILE = os.environ.get("FONT_FILE", "DejaVuSans.ttf")
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "1"))
@@ -22,8 +24,8 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 cancel_flags = {}
 AUTHORIZED_USERS = set()
 PENDING_STATES = {}
-queue_messages = {} # NAYA: Queue msg delete ke liye
-zip_queue_messages = {} # NAYA: Zip msg delete ke liye
+queue_messages = {}
+zip_queue_messages = {}
 
 # Settings
 CURRENT_WATERMARK = WATERMARK
@@ -78,7 +80,6 @@ async def process_video(event, user_id):
     username = f"@{user.username}" if user.username else f"{user.first_name}"
 
     try:
-        # 1. Queue msg bhejo aur save karo
         q_pos = queue.qsize() + len(processing)
         msg = await client.send_message(user_id, f"⏳ **Queue #{q_pos}**\nMode: {'No WM' if NO_WM_MODE else WATERMARK_MODE}")
         queue_messages[event.id] = msg.id
@@ -119,21 +120,18 @@ async def process_video(event, user_id):
             ZIP_QUEUE.append(output)
             wm_status = "No WM" if NO_WM_MODE else f"WM: {WATERMARK_MODE}"
 
-            # Zip msg bhejo aur save karo
             msg2 = await event.reply(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{wm_status}`\n`/zipnow` = Foran zip")
             if user_id not in zip_queue_messages:
                 zip_queue_messages[user_id] = []
             zip_queue_messages[user_id].append(msg2.id)
 
-            # Queue msg delete
             if event.id in queue_messages:
                 await client.delete_messages(user_id, queue_messages[event.id])
                 del queue_messages[event.id]
 
-            if len(ZIP_QUEUE) >= 10:
+            if len(ZIP_QUEUE) >= 10: # Auto zip 10 par
                 await create_and_send_zip(event.chat_id, username, user_id)
         else:
-            # Queue msg delete
             if event.id in queue_messages:
                 await client.delete_messages(user_id, queue_messages[event.id])
                 del queue_messages[event.id]
@@ -190,7 +188,7 @@ async def create_and_send_zip(chat_id, username, user_id):
     )
     await msg.delete()
 
-    # 3. CHANNEL ME BACKUP BHEJO
+    # 3. CHANNEL ME BACKUP BHEJO - FINAL FIX
     if BACKUP_CHANNEL:
         try:
             backup_caption = f"""📦 **New Zip Backup**
@@ -199,28 +197,30 @@ async def create_and_send_zip(chat_id, username, user_id):
 **Mode:** {mode}
 **Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}"""
             await client.send_file(BACKUP_CHANNEL, zip_name, caption=backup_caption)
+            print(f"✅ Backup sent to {BACKUP_CHANNEL}") # Log me confirm
         except Exception as e:
-            print(f"Backup Error: {e}")
+            print(f"❌ Backup Error: {e}") # Log me error
 
     for video in ZIP_QUEUE:
         if os.path.exists(video): os.remove(video)
     if os.path.exists(zip_name): os.remove(zip_name)
     ZIP_QUEUE = []
 
-# ===== COMMANDS SAME =====
-@client.on(events.NewMessage(pattern='/login'))
+# ===== FIXED COMMANDS =====
+@client.on(events.NewMessage(pattern=r'^/login'))
 async def login_handler(event):
-    if len(event.text.split()) < 2:
+    parts = event.text.split(maxsplit=1)
+    if len(parts) < 2:
         PENDING_STATES[event.sender_id] = "login"
         await event.reply('Please enter password')
         return
-    if event.text.split()[1] == BOT_PASSWORD:
+    if parts[1] == BOT_PASSWORD:
         AUTHORIZED_USERS.add(event.sender_id)
         await event.reply('✅ **Login Success!**\n\n`/help` likho commands ke liye.')
     else:
         await event.reply('❌ Galat password.')
 
-@client.on(events.NewMessage(pattern='/logout'))
+@client.on(events.NewMessage(pattern=r'^/logout'))
 async def logout_handler(event):
     if event.sender_id in AUTHORIZED_USERS:
         AUTHORIZED_USERS.remove(event.sender_id)
@@ -228,7 +228,7 @@ async def logout_handler(event):
     else:
         await event.reply('❌ Pehle login hi nahi kiya')
 
-@client.on(events.NewMessage(pattern='/nowm'))
+@client.on(events.NewMessage(pattern=r'^/nowm'))
 async def nowm_toggle(event):
     global NO_WM_MODE
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
@@ -236,57 +236,62 @@ async def nowm_toggle(event):
     status = "ON" if NO_WM_MODE else "OFF"
     await event.reply(f"✅ **No Watermark Mode: {status}**")
 
-@client.on(events.NewMessage(pattern='/zip'))
+@client.on(events.NewMessage(pattern=r'^/zip$')) # <-- FIX: $ lagaya exact match
 async def zip_toggle(event):
     global ZIP_MODE
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     ZIP_MODE = not ZIP_MODE
     status = "ON" if ZIP_MODE else "OFF"
-    await event.reply(f"✅ **Zip Mode: {status}**")
+    msg = "✅ **Zip Mode: ON**\nAb videos queue me jayengi" if ZIP_MODE else "✅ **Zip Mode: OFF**\nAb videos direct send hongi"
+    await event.reply(msg)
 
-@client.on(events.NewMessage(pattern='/zipnow'))
+@client.on(events.NewMessage(pattern=r'^/zipnow$')) # <-- FIX: $ lagaya exact match
 async def zip_now(event):
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     if len(ZIP_QUEUE) == 0: return await event.reply("❌ **Zip Queue khali hai**")
     user = await client.get_entity(event.sender_id)
     username = f"@{user.username}" if user.username else f"{user.first_name}"
+    await event.reply(f"⏳ **{len(ZIP_QUEUE)} videos ki zip bana raha hun...**")
     await create_and_send_zip(event.chat_id, username, event.sender_id)
 
-@client.on(events.NewMessage(pattern='/wmmode'))
+@client.on(events.NewMessage(pattern=r'^/wmmode'))
 async def wmmode_handler(event):
     global WATERMARK_MODE
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     WATERMARK_MODE = "static" if WATERMARK_MODE == "bouncing" else "bouncing"
     await event.reply(f"✅ **Watermark Mode: {WATERMARK_MODE.title()}**")
 
-@client.on(events.NewMessage(pattern='/delete'))
+@client.on(events.NewMessage(pattern=r'^/delete'))
 async def delete_handler(event):
     global DELETE_ORIGINAL
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    if len(event.text.split()) > 1:
-        DELETE_ORIGINAL = True if event.text.split()[1].lower() == 'on' else False
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        DELETE_ORIGINAL = True if parts[1].lower() == 'on' else False
         await event.reply(f"✅ **Delete Original: {DELETE_ORIGINAL}**")
     else:
         PENDING_STATES[event.sender_id] = "delete"
         await event.reply("Enter `on` or `off`")
 
-@client.on(events.NewMessage(pattern='/set'))
+@client.on(events.NewMessage(pattern=r'^/set'))
 async def set_handler(event):
     global CURRENT_WATERMARK
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    if len(event.text.split()) > 1:
-        CURRENT_WATERMARK = event.text[4:].strip()
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        CURRENT_WATERMARK = parts[1].strip()
         await event.reply(f"✅ **Watermark Updated**\n`{CURRENT_WATERMARK}`")
     else:
         PENDING_STATES[event.sender_id] = "set"
         await event.reply("Please enter watermark text")
 
-@client.on(events.NewMessage(pattern='/setname'))
+@client.on(events.NewMessage(pattern=r'^/setname'))
 async def setname_handler(event):
     global NAME_MODE, CUSTOM_PREFIX
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    if len(event.text.split()) > 1:
-        val = event.text[8:].strip()
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        val = parts[1].strip()
         if val == "original": NAME_MODE = "original"; await event.reply("✅ **Name Mode:** Original")
         elif val == "water_id": NAME_MODE = "water_id"; await event.reply("✅ **Name Mode:** water_id")
         elif val.startswith("custom"): CUSTOM_PREFIX = val[7:].strip() if len(val) > 6 else "wm_"; NAME_MODE = "custom"; await event.reply(f"✅ **Custom Prefix:** `{CUSTOM_PREFIX}`")
@@ -312,7 +317,7 @@ async def input_handler(event):
         else: await event.reply('❌ Galat password.')
     await event.delete()
 
-@client.on(events.NewMessage(pattern='/current'))
+@client.on(events.NewMessage(pattern=r'^/current'))
 async def current_handler(event):
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     zip_status = "ON" if ZIP_MODE else "OFF"
@@ -327,10 +332,11 @@ async def current_handler(event):
         f"**Zip Queue:** `{len(ZIP_QUEUE)}` videos\n"
         f"**Delete Original:** `{DELETE_ORIGINAL}`\n"
         f"**Name Mode:** `{NAME_MODE}`\n"
-        f"**Custom Prefix:** `{prefix_text}`"
+        f"**Custom Prefix:** `{prefix_text}`\n"
+        f"**Backup Channel:** `{BACKUP_CHANNEL}`" # NAYA
     )
 
-@client.on(events.NewMessage(pattern='/cancel'))
+@client.on(events.NewMessage(pattern=r'^/cancel'))
 async def cancel_handler(event):
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     if event.is_reply:
@@ -338,18 +344,18 @@ async def cancel_handler(event):
         return await event.reply("🚫 **Cancelling this video...**")
     count = 0
     while not queue.empty():
-        try: cancel_flags[queue.get_nowait().id] = True; count += 1; queue.task_done()
+        try: cancel_flags[queue.get_nowait()[0].id] = True; count += 1; queue.task_done()
         except: break
     for pid in list(processing): cancel_flags[pid] = True; count += 1
     await event.reply(f"🚫 **Cancelled {count} videos**" if count > 0 else "❌ **No videos in queue**")
 
-@client.on(events.NewMessage(pattern='/help|/start'))
+@client.on(events.NewMessage(pattern=r'^/help|^/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark + Zip Bot v2.3**\n\n"
+        "**🔥 Text Watermark + Zip Bot v2.4**\n\n"
         "**🔐 Auth:** \n`/login password` `/logout`\n\n"
         "**⚙️ Settings:** \n`/set text` `/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
-        "**📦 Zip:** \n`/zip` ON/OFF `/zipnow`\n\n"
+        "**📦 Zip:** \n`/zip` = ON/OFF Toggle\n`/zipnow` = Foran Zip Banao\n\n"
         "**📋 Queue:** \n`/cancel`\n\n"
         "**Pro Tip:**\n`/nowm` ON + `/zip` ON = Sirf zip, koi WM nahi"
     )
@@ -361,7 +367,8 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.3 - Auto Delete + Backup")
+    print("BOT STARTED v2.4 - Fixed Backup + Commands")
+    print(f"Backup Channel ID: {BACKUP_CHANNEL}") # Log me check
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
     print("✅ Bot Online!")
