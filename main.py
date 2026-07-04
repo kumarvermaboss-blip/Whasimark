@@ -84,9 +84,10 @@ async def process_video(event):
         else:
             output = f"water_{event.id}.mp4"
 
-        # WATERMARK MODE SELECT
+        # WATERMARK MODE SELECT - FIXED BOUNCING
         if WATERMARK_MODE == "bouncing":
-            vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=h/22:x='abs(mod(100*t\\,w*2)-w+text_w)':y='abs(mod(80*t\\,h*2)-h+text_h)':fontcolor={CURRENT_COLOR}:shadowcolor=black@0.6:shadowx=2:shadowy=2:box=1:boxcolor=black@0.2:boxborderw=5"
+            # FIX: max/min lagaya taake text frame se bahar na jaye
+            vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=h/22:x='max(0\\,min(w-text_w\\,abs(mod(120*t\\,w*2)-w)))':y='max(0\\,min(h-text_h\\,abs(mod(90*t\\,h*2)-h)))':fontcolor={CURRENT_COLOR}:shadowcolor=black@0.6:shadowx=2:shadowy=2:box=1:boxcolor=black@0.2:boxborderw=5"
         else:
             vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=h/25:x=(w-text_w)/2:y=(h-text_h)/2:fontcolor={CURRENT_COLOR}"
 
@@ -152,10 +153,10 @@ async def wmmode_handler(event):
         return
     if WATERMARK_MODE == "bouncing":
         WATERMARK_MODE = "static"
-        await event.reply("✅ **Watermark Mode: Static Center**\nAb watermark beech me rukega.")
+        await event.reply("✅ **Watermark Mode: Static Center**")
     else:
         WATERMARK_MODE = "bouncing"
-        await event.reply("✅ **Watermark Mode: Bouncing**\nAb watermark idhar udhar kudega.")
+        await event.reply("✅ **Watermark Mode: Bouncing**")
 
 @client.on(events.NewMessage(pattern='/(set|color|delete|setname)'))
 async def command_handler(event):
@@ -192,20 +193,20 @@ async def set_value(event, cmd, value):
 async def dark_handler(event):
     global CURRENT_COLOR
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    CURRENT_COLOR = "white@0.8"; await event.reply("✅ **Dark Mode ON**\nColor: `white@0.8`")
+    CURRENT_COLOR = "white@0.8"; await event.reply("✅ **Dark Mode ON**")
 
 @client.on(events.NewMessage(pattern='/light'))
 async def light_handler(event):
     global CURRENT_COLOR
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    CURRENT_COLOR = "white@0.3"; await event.reply("✅ **Light Mode ON**\nColor: `white@0.3`")
+    CURRENT_COLOR = "white@0.3"; await event.reply("✅ **Light Mode ON**")
 
 @client.on(events.NewMessage(pattern='/logout'))
 async def logout_handler(event):
     if event.sender_id in AUTHORIZED_USERS: AUTHORIZED_USERS.remove(event.sender_id); await event.reply("✅ **Logged Out!**")
     else: await event.reply("❌ Tum login hi nahi ho")
 
-@client.on(events.NewMessage(pattern='/current')) # UPDATED
+@client.on(events.NewMessage(pattern='/current'))
 async def current_handler(event):
     if event.sender_id not in AUTHORIZED_USERS:
         await event.reply('🔒 Pehle /login karo')
@@ -215,7 +216,7 @@ async def current_handler(event):
         f"**📊 Current Settings:**\n\n"
         f"**Watermark:** `{CURRENT_WATERMARK}`\n"
         f"**Color:** `{CURRENT_COLOR}`\n"
-        f"**WM Mode:** `{WATERMARK_MODE}`\n" # NAYI LINE
+        f"**WM Mode:** `{WATERMARK_MODE}`\n"
         f"**Delete Original:** `{DELETE_ORIGINAL}`\n"
         f"**Name Mode:** `{NAME_MODE}`\n"
         f"**Custom Prefix:** `{prefix_text}`\n"
