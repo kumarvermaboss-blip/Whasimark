@@ -4,9 +4,15 @@ import datetime
 from telethon import TelegramClient, events
 
 # ========== CONFIG ==========
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "2"))
 MAX_ZIP_VIDEOS = int(os.environ.get("MAX_ZIP_VIDEOS", "10"))
-BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL", None) # Railway me set karo
+BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL", None)
 
 semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 queue = asyncio.Queue()
@@ -14,14 +20,19 @@ queue_messages = {}
 zip_queue_messages = {} 
 zip_queue = {} # user_id: [list of files]
 
-# ... tumhara client start ...
+async def process_video(event):
+    # YAHAN TUMHARA WM REMOVE KA CODE HOGA
+    # Example: download -> process -> return path
+    file_path = await event.download_media()
+    output_file = "output.mp4" # process karke ye banao
+    return output_file
 
 async def worker():
     while True:
         event, user_id = await queue.get()
         async with semaphore:
             try:
-                output_file = await process_video(event) # tumhara watermark remove function
+                output_file = await process_video(event)
 
                 # 1. User ko video bhejo
                 sent_video = await client.send_file(user_id, output_file, caption="✅ No WM Done")
@@ -61,7 +72,8 @@ async def add_to_zip(event):
         await client.send_message(user_id, f"Max {MAX_ZIP_VIDEOS} videos reached")
         return
 
-    zip_queue[user_id].append(event.media) # file save karo
+    file_path = await event.download_media() # video save
+    zip_queue[user_id].append(file_path)
 
     total = len(zip_queue[user_id])
     msg = await client.send_message(user_id, f"📦 Added to Zip Queue\nTotal: {total}/{MAX_ZIP_VIDEOS} videos\nMode: No WM\n/zipnow = Foran zip")
@@ -79,8 +91,14 @@ async def make_zip(event):
         await client.send_message(user_id, "Zip queue is empty")
         return
 
-    # ... yahan tum zip banate ho ...
-    zip_path = "Watermarked.zip" 
+    # YAHAN ZIP BANAO
+    import zipfile
+    zip_path = "Watermarked.zip"
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for file in zip_queue[user_id]:
+            zipf.write(file)
+            os.remove(file) # temp file delete
+
     total = len(zip_queue[user_id])
     mode = "No WM"
 
@@ -106,4 +124,12 @@ async def make_zip(event):
             print(f"Channel backup error: {e}")
 
     del zip_queue[user_id]
-    os.remove(zip_path) # local file delete
+    os.remove(zip_path) # local zip delete
+
+async def main():
+    asyncio.create_task(worker())
+    print("Bot Started...")
+    await client.run_until_disconnected()
+
+with client:
+    client.loop.run_until_complete(main())
