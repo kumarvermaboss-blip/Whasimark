@@ -1,8 +1,6 @@
 import os
 import asyncio
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError
-import subprocess
 import zipfile
 import shutil
 from datetime import datetime
@@ -11,7 +9,7 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 BOT_PASSWORD = os.environ.get("BOT_PASSWORD")
-BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL", None) # <-- NAYA
+BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL", None)
 WATERMARK = os.environ.get("WATERMARK", "@bvsrv1")
 FONT_FILE = os.environ.get("FONT_FILE", "DejaVuSans.ttf")
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "1"))
@@ -24,6 +22,8 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 cancel_flags = {}
 AUTHORIZED_USERS = set()
 PENDING_STATES = {}
+queue_messages = {} # NAYA: Queue msg delete ke liye
+zip_queue_messages = {} # NAYA: Zip msg delete ke liye
 
 # Settings
 CURRENT_WATERMARK = WATERMARK
@@ -38,7 +38,7 @@ ZIP_QUEUE = []
 
 async def worker():
     while True:
-        event = await queue.get()
+        event, user_id = await queue.get()
         async with semaphore:
             if event.id in cancel_flags:
                 del cancel_flags[event.id]
@@ -46,7 +46,7 @@ async def worker():
                 continue
             processing.add(event.id)
             try:
-                await process_video(event)
+                await process_video(event, user_id)
             except Exception as e:
                 if event.id not in cancel_flags and "Cancelled" not in str(e):
                     try:
@@ -69,16 +69,20 @@ async def progress_callback(current, total, msg, action, event_id):
         except:
             pass
 
-async def process_video(event):
+async def process_video(event, user_id):
     global ZIP_QUEUE
     msg = None
     file = None
     output = None
-    user = await client.get_entity(event.sender_id)
+    user = await client.get_entity(user_id)
     username = f"@{user.username}" if user.username else f"{user.first_name}"
 
     try:
-        msg = await event.reply(f"⏳ Processing...")
+        # 1. Queue msg bhejo aur save karo
+        q_pos = queue.qsize() + len(processing)
+        msg = await client.send_message(user_id, f"⏳ **Queue #{q_pos}**\nMode: {'No WM' if NO_WM_MODE else WATERMARK_MODE}")
+        queue_messages[event.id] = msg.id
+
         file = await event.download_media(
             progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id)
         )
@@ -106,17 +110,7 @@ async def process_video(event):
 
             cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
-
-            while proc.returncode is None:
-                if event.id in cancel_flags:
-                    proc.kill()
-                    raise Exception("Cancelled by user")
-                await asyncio.sleep(0.5)
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    pass
-
+            await proc.wait()
             if proc.returncode!= 0:
                 raise Exception("FFmpeg failed")
 
@@ -124,10 +118,26 @@ async def process_video(event):
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
             wm_status = "No WM" if NO_WM_MODE else f"WM: {WATERMARK_MODE}"
-            await msg.edit(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{wm_status}`\n`/zipnow` = Foran zip")
+
+            # Zip msg bhejo aur save karo
+            msg2 = await event.reply(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{wm_status}`\n`/zipnow` = Foran zip")
+            if user_id not in zip_queue_messages:
+                zip_queue_messages[user_id] = []
+            zip_queue_messages[user_id].append(msg2.id)
+
+            # Queue msg delete
+            if event.id in queue_messages:
+                await client.delete_messages(user_id, queue_messages[event.id])
+                del queue_messages[event.id]
+
             if len(ZIP_QUEUE) >= 10:
-                await create_and_send_zip(event.chat_id, username, event.sender_id)
+                await create_and_send_zip(event.chat_id, username, user_id)
         else:
+            # Queue msg delete
+            if event.id in queue_messages:
+                await client.delete_messages(user_id, queue_messages[event.id])
+                del queue_messages[event.id]
+
             await client.send_file(
                 event.chat_id, output,
                 caption=f"✅ Done | {'No Watermark' if NO_WM_MODE else f'WM: {WATERMARK_MODE}'}",
@@ -164,7 +174,15 @@ async def create_and_send_zip(chat_id, username, user_id):
     total = len(ZIP_QUEUE)
     mode = 'No WM' if NO_WM_MODE else WATERMARK_MODE
 
-    # 1. USER KO ZIP BHEJO
+    # 1. SAARE ZIP QUEUE MSG DELETE
+    if user_id in zip_queue_messages and zip_queue_messages[user_id]:
+        try:
+            await client.delete_messages(chat_id, zip_queue_messages[user_id])
+        except:
+            pass
+        del zip_queue_messages[user_id]
+
+    # 2. USER KO ZIP BHEJO
     await client.send_file(
         chat_id, zip_name,
         caption=f"📦 **Zip Ready**\nTotal: `{total}` videos\nMode: `{mode}`",
@@ -172,20 +190,24 @@ async def create_and_send_zip(chat_id, username, user_id):
     )
     await msg.delete()
 
-    # 2. NAYA: CHANNEL ME BACKUP BHEJO - SIRF ZIP
+    # 3. CHANNEL ME BACKUP BHEJO
     if BACKUP_CHANNEL:
-        backup_caption = f"""📦 **New Zip Backup**
+        try:
+            backup_caption = f"""📦 **New Zip Backup**
 **User:** {username} `ID: {user_id}`
 **Total Videos:** {total}
 **Mode:** {mode}
 **Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}"""
-        await client.send_file(BACKUP_CHANNEL, zip_name, caption=backup_caption)
+            await client.send_file(BACKUP_CHANNEL, zip_name, caption=backup_caption)
+        except Exception as e:
+            print(f"Backup Error: {e}")
 
     for video in ZIP_QUEUE:
         if os.path.exists(video): os.remove(video)
     if os.path.exists(zip_name): os.remove(zip_name)
     ZIP_QUEUE = []
 
+# ===== COMMANDS SAME =====
 @client.on(events.NewMessage(pattern='/login'))
 async def login_handler(event):
     if len(event.text.split()) < 2:
@@ -212,7 +234,7 @@ async def nowm_toggle(event):
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     NO_WM_MODE = not NO_WM_MODE
     status = "ON" if NO_WM_MODE else "OFF"
-    await event.reply(f"✅ **No Watermark Mode: {status}**\n\nON = Sirf zip banegi, WM nahi lagega")
+    await event.reply(f"✅ **No Watermark Mode: {status}**")
 
 @client.on(events.NewMessage(pattern='/zip'))
 async def zip_toggle(event):
@@ -324,7 +346,7 @@ async def cancel_handler(event):
 @client.on(events.NewMessage(pattern='/help|/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark + Zip Bot v2.2**\n\n"
+        "**🔥 Text Watermark + Zip Bot v2.3**\n\n"
         "**🔐 Auth:** \n`/login password` `/logout`\n\n"
         "**⚙️ Settings:** \n`/set text` `/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
         "**📦 Zip:** \n`/zip` ON/OFF `/zipnow`\n\n"
@@ -336,12 +358,10 @@ async def help_handler(event):
 async def handle_video(event):
     if event.sender_id not in AUTHORIZED_USERS:
         return await event.reply('🔒 **Bot Locked**\n\n`/login password`')
-    await queue.put(event)
-    pos = queue.qsize() + len(processing)
-    if pos > 1: await event.reply(f"⏳ **Queue #{pos-1}**")
+    await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.2 with Backup")
+    print("BOT STARTED v2.3 - Auto Delete + Backup")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
     print("✅ Bot Online!")
