@@ -4,6 +4,7 @@ from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 import subprocess
 import zipfile
+import shutil
 from datetime import datetime
 
 API_ID = int(os.environ.get("API_ID"))
@@ -25,12 +26,13 @@ PENDING_STATES = {}
 
 # Settings
 CURRENT_WATERMARK = WATERMARK
-CURRENT_COLOR = "red@0.9" # Red text
+CURRENT_COLOR = "red@0.9"
 DELETE_ORIGINAL = False
 NAME_MODE = "water_id"
 CUSTOM_PREFIX = "wm_"
 WATERMARK_MODE = "bouncing"
 ZIP_MODE = False
+NO_WM_MODE = False # NAYA: Watermark skip karne ke liye
 ZIP_QUEUE = []
 
 async def worker():
@@ -78,7 +80,6 @@ async def process_video(event):
         )
         if event.id in cancel_flags:
             raise Exception("Cancelled")
-        await msg.edit("🎬 Watermark laga rahe...")
 
         # FILENAME
         if NAME_MODE == "original":
@@ -88,38 +89,45 @@ async def process_video(event):
         else:
             output = f"water_{event.id}.mp4"
 
-        # TEXT WATERMARK ONLY - NO PNG
-        if WATERMARK_MODE == "bouncing":
-            vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=45:fontcolor={CURRENT_COLOR}:x='max(0\\,min(W-tw\\,abs(mod(120*t\\,W*2)-W)))':y='max(0\\,min(H-th\\,abs(mod(90*t\\,H*2)-H)))'"
+        # CHECK: NO_WM_MODE ON HAI?
+        if NO_WM_MODE:
+            await msg.edit("📦 **No Watermark Mode** - Sirf copy kar raha")
+            shutil.copy(file, output) # Seedha copy, FFmpeg nahi chalega
         else:
-            vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=45:fontcolor={CURRENT_COLOR}:x=20:y=20"
+            await msg.edit("🎬 Watermark laga rahe...")
+            # TEXT WATERMARK
+            if WATERMARK_MODE == "bouncing":
+                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=45:fontcolor={CURRENT_COLOR}:x='max(0\\,min(W-tw\\,abs(mod(120*t\\,W*2)-W)))':y='max(0\\,min(H-th\\,abs(mod(90*t\\,H*2)-H)))'"
+            else:
+                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=45:fontcolor={CURRENT_COLOR}:x=20:y=20"
 
-        cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
-        proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
+            cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
+            proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
 
-        while proc.returncode is None:
-            if event.id in cancel_flags:
-                proc.kill()
-                raise Exception("Cancelled by user")
-            await asyncio.sleep(0.5)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=0.1)
-            except asyncio.TimeoutError:
-                pass
+            while proc.returncode is None:
+                if event.id in cancel_flags:
+                    proc.kill()
+                    raise Exception("Cancelled by user")
+                await asyncio.sleep(0.5)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    pass
 
-        if proc.returncode!= 0:
-            raise Exception("FFmpeg failed")
+            if proc.returncode!= 0:
+                raise Exception("FFmpeg failed")
 
         # ZIP MODE
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
-            await msg.edit(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\n`/zipnow` = Foran zip bhej do")
+            wm_status = "No WM" if NO_WM_MODE else f"WM: {WATERMARK_MODE}"
+            await msg.edit(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{wm_status}`\n`/zipnow` = Foran zip")
             if len(ZIP_QUEUE) >= 10:
                 await create_and_send_zip(event.chat_id)
         else:
             await client.send_file(
                 event.chat_id, output,
-                caption=f"✅ Done | Mode: {WATERMARK_MODE}\nText: `{CURRENT_WATERMARK}`",
+                caption=f"✅ Done | {'No Watermark' if NO_WM_MODE else f'WM: {WATERMARK_MODE}'}",
                 reply_to=event.id,
                 force_document=True,
                 progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id)
@@ -152,7 +160,7 @@ async def create_and_send_zip(chat_id):
 
     await client.send_file(
         chat_id, zip_name,
-        caption=f"📦 **Zip Ready**\nTotal: `{len(ZIP_QUEUE)}` videos\n📁 Extract karke `Main storage > Watermarked` me daal do",
+        caption=f"📦 **Zip Ready**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{'No WM' if NO_WM_MODE else WATERMARK_MODE}`",
         force_document=True
     )
     await msg.delete()
@@ -161,6 +169,14 @@ async def create_and_send_zip(chat_id):
         if os.path.exists(video): os.remove(video)
     if os.path.exists(zip_name): os.remove(zip_name)
     ZIP_QUEUE = []
+
+@client.on(events.NewMessage(pattern='/nowm'))
+async def nowm_toggle(event):
+    global NO_WM_MODE
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
+    NO_WM_MODE = not NO_WM_MODE
+    status = "ON" if NO_WM_MODE else "OFF"
+    await event.reply(f"✅ **No Watermark Mode: {status}**\n\nON = Sirf zip banegi, WM nahi lagega\nOFF = Normal WM lagega")
 
 @client.on(events.NewMessage(pattern='/zip'))
 async def zip_toggle(event):
@@ -226,11 +242,12 @@ async def input_handler(event):
 async def current_handler(event):
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     zip_status = "ON" if ZIP_MODE else "OFF"
+    nowm_status = "ON" if NO_WM_MODE else "OFF"
     await event.reply(
         f"**📊 Current Settings:**\n\n"
         f"**Watermark:** `{CURRENT_WATERMARK}`\n"
         f"**WM Mode:** `{WATERMARK_MODE}`\n"
-        f"**Color:** `Red`\n"
+        f"**No WM Mode:** `{nowm_status}`\n"
         f"**Zip Mode:** `{zip_status}`\n"
         f"**Zip Queue:** `{len(ZIP_QUEUE)}` videos"
     )
@@ -238,12 +255,15 @@ async def current_handler(event):
 @client.on(events.NewMessage(pattern='/help|/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark Bot**\n\n"
+        "**🔥 Text Watermark + Zip Bot**\n\n"
         "**🔐** `/login password`\n"
-        "**⚙️** `/set text` `/wmmode` `/current`\n"
+        "**⚙️** `/set text` `/wmmode` `/nowm`\n"
         "**📦** `/zip` ON/OFF `/zipnow`\n"
-        "**📋** `/cancel`\n\n"
-        "**Note:** PNG nahi hai. Sirf Red Text bouncing hoga"
+        "**📋** `/cancel` `/current`\n\n"
+        "**No WM kaise use kare:**\n"
+        "1. `/nowm` ON karo\n"
+        "2. `/zip` ON karo \n"
+        "3. Videos bhejo - WM nahi lagega, sirf zip banegi"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
