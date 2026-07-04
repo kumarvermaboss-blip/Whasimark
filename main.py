@@ -1,7 +1,7 @@
 import os
 import asyncio
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError # NEW
+from telethon.errors import FloodWaitError
 import subprocess
 
 API_ID = int(os.environ.get("API_ID"))
@@ -27,6 +27,7 @@ CURRENT_COLOR = "white@0.8"
 DELETE_ORIGINAL = False
 NAME_MODE = "water_id"
 CUSTOM_PREFIX = "wm_"
+WATERMARK_MODE = "bouncing" # NEW: bouncing ya static
 
 async def worker():
     while True:
@@ -56,7 +57,7 @@ async def progress_callback(current, total, msg, action, event_id):
     if event_id in cancel_flags:
         raise Exception("Cancelled by user")
     percent = int(current * 100 / total)
-    if percent % 20 == 0 or percent == 100: # 10% se 20% kar diya - kam spam
+    if percent % 25 == 0 or percent == 100: # Spam kam kiya
         try:
             await msg.edit(f"{action} {percent}%")
         except:
@@ -69,7 +70,7 @@ async def process_video(event):
 
     try:
         msg = await event.reply(f"⏳ Processing...")
-        await asyncio.sleep(1) # NEW: Rate limit se bachne ke liye
+        await asyncio.sleep(1)
 
         file = await event.download_media(
             progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id)
@@ -78,7 +79,7 @@ async def process_video(event):
         if event.id in cancel_flags:
             raise Exception("Cancelled")
 
-        await msg.edit("🎬 Watermark laga rahe...")
+        await msg.edit("🎬 Bouncing watermark laga rahe...")
 
         # FILENAME LOGIC
         if NAME_MODE == "original":
@@ -94,9 +95,17 @@ async def process_video(event):
         else:
             output = f"water_{event.id}.mp4"
 
+        # WATERMARK MODE SELECT
+        if WATERMARK_MODE == "bouncing":
+            # BOUNCING WATERMARK
+            vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=h/22:x='abs(mod(100*t\\,w*2)-w+text_w)':y='abs(mod(80*t\\,h*2)-h+text_h)':fontcolor={CURRENT_COLOR}:shadowcolor=black@0.6:shadowx=2:shadowy=2:box=1:boxcolor=black@0.2:boxborderw=5"
+        else:
+            # STATIC CENTER WATERMARK
+            vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=h/25:x=(w-text_w)/2:y=(h-text_h)/2:fontcolor={CURRENT_COLOR}"
+
         cmd = [
             'ffmpeg', '-i', file,
-            '-vf', f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize=h/25:x=(w-text_w)/2:y=(h-text_h)/2:fontcolor={CURRENT_COLOR}",
+            '-vf', vf_filter,
             '-c:a', 'copy', '-preset', 'ultrafast', output, '-y'
         ]
 
@@ -118,7 +127,7 @@ async def process_video(event):
         await client.send_file(
             event.chat_id,
             output,
-            caption=f"✅ Done | {CURRENT_WATERMARK}",
+            caption=f"✅ Done | Mode: {WATERMARK_MODE} | {CURRENT_WATERMARK}",
             reply_to=event.id,
             progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id)
         )
@@ -128,7 +137,7 @@ async def process_video(event):
 
         await msg.delete()
 
-    except FloodWaitError as e: # NEW: Telegram limit handle
+    except FloodWaitError as e:
         wait_time = e.seconds
         if msg:
             await msg.edit(f"⏳ Telegram limit: {wait_time}s wait kar raha hu...")
@@ -163,6 +172,21 @@ async def login_handler(event):
         await event.reply('✅ **Login Success!**\n\nAb tum bot use kar sakte ho.\n`/help` likho commands ke liye.')
     else:
         await event.reply('❌ Galat password.')
+
+# NEW: Watermark mode toggle command
+@client.on(events.NewMessage(pattern='/wmmode'))
+async def wmmode_handler(event):
+    global WATERMARK_MODE
+    if event.sender_id not in AUTHORIZED_USERS:
+        await event.reply('🔒 Pehle /login karo')
+        return
+
+    if WATERMARK_MODE == "bouncing":
+        WATERMARK_MODE = "static"
+        await event.reply("✅ **Watermark Mode: Static Center**\nAb watermark beech me rukega.")
+    else:
+        WATERMARK_MODE = "bouncing"
+        await event.reply("✅ **Watermark Mode: Bouncing**\nAb watermark idhar udhar kudega.")
 
 @client.on(events.NewMessage(pattern='/(set|color|delete|setname)'))
 async def command_handler(event):
@@ -278,6 +302,7 @@ async def current_handler(event):
         f"**📊 Current Settings:**\n\n"
         f"**Watermark:** `{CURRENT_WATERMARK}`\n"
         f"**Color:** `{CURRENT_COLOR}`\n"
+        f"**WM Mode:** `{WATERMARK_MODE}`\n"
         f"**Delete Original:** `{DELETE_ORIGINAL}`\n"
         f"**Name Mode:** `{NAME_MODE}`\n"
         f"**Custom Prefix:** `{prefix_text}`\n"
@@ -319,13 +344,14 @@ async def cancel_handler(event):
 @client.on(events.NewMessage(pattern='/help|/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Watermark Bot - Full Commands**\n\n"
+        "**🔥 Watermark Bot - Bouncing Edition**\n\n"
         "**🔐 Auth:**\n"
         "`/login` - Bot unlock karo\n"
         "`/logout` - Bot lock karo\n\n"
         "**⚙️ Settings:**\n"
         "`/set` - Watermark text\n"
         "`/color` - Color + opacity\n"
+        "`/wmmode` - Bouncing/Static toggle\n"
         "`/dark` - Dark watermark\n"
         "`/light` - Light watermark\n"
         "`/delete` - Original delete on/off\n"
@@ -334,7 +360,7 @@ async def help_handler(event):
         "**📋 Queue:**\n"
         "`/cancel` - Sab cancel karo\n"
         "Reply + `/cancel` - 1 video cancel\n\n"
-        "**📹 Video bhejo** - Watermark lag jayega"
+        "**📹 Video bhejo** - Bouncing watermark lag jayega"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
@@ -345,17 +371,17 @@ async def handle_video(event):
 
     await queue.put(event)
     pos = queue.qsize() + len(processing)
-    # Queue message spam fix - sirf 2 se zyada pe bhej
     if pos > 2:
         await event.reply(f"⏳ **Queue #{pos-1}** - Waiting...")
-        await asyncio.sleep(1) # Rate limit bachao
+        await asyncio.sleep(1)
 
 async def main():
     print("="*50)
-    print("WATERMARK BOT - FIXED VERSION")
+    print("WATERMARK BOT - BOUNCING EDITION")
     print("="*50)
     print(f"Password: {BOT_PASSWORD}")
     print(f"Watermark: {CURRENT_WATERMARK}")
+    print(f"WM Mode: {WATERMARK_MODE}")
     print(f"Color: {CURRENT_COLOR}")
     print(f"Delete Original: {DELETE_ORIGINAL}")
     print(f"Name Mode: {NAME_MODE}")
