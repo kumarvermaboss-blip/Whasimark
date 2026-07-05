@@ -53,7 +53,7 @@ async def worker():
             except Exception as e:
                 if event.id not in cancel_flags and "Cancelled" not in str(e):
                     try:
-                        await event.reply(f"❌ Error: {str(e)[:100]}")
+                        await event.reply(f"❌ Error: {str(e)[:200]}")
                     except:
                         pass
             finally:
@@ -106,17 +106,17 @@ async def process_video(event, user_id):
         else:
             await msg.edit("🎬 Watermark laga rahe...")
 
-            # v2.14 FIX: Force andar + max width 90%
+            # v2.17 FIX: v2.9 simple + clamp. FFmpeg 7 friendly
             if WATERMARK_MODE == "bouncing":
-                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:box=1:boxcolor=black@0.5:boxborderw=5:x='clamp(5\\,mod(120*t\\,w-text_w-10)\\,w-text_w-5)':y='clamp(5\\,mod(90*t\\,h-text_h-10)\\,h-text_h-5)':max_glyph_width=w*0.9"
+                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:x='clamp(10\\,mod(120*t\\,w-text_w-20)\\,w-text_w-10)':y='clamp(10\\,mod(90*t\\,h-text_h-20)\\,h-text_h-10)'"
             else:
-                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:box=1:boxcolor=black@0.5:boxborderw=5:x='clamp(5\\,20\\,w-text_w-5)':y='clamp(5\\,20\\,h-text_h-5)':max_glyph_width=w*0.9"
+                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:x='clamp(10\\,20\\,w-text_w-10)':y='clamp(10\\,20\\,h-text_h-10)'"
 
             cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
             if proc.returncode!= 0:
-                error_text = stderr.decode()[:200]
+                error_text = stderr.decode()[:300]
                 raise Exception(f"FFmpeg failed: {error_text}")
 
         # ZIP MODE
@@ -150,7 +150,7 @@ async def process_video(event, user_id):
 
     except Exception as e:
         if msg:
-            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)[:100]}")
+            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)[:200]}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
@@ -337,7 +337,7 @@ async def current_handler(event):
     nowm_status = "ON" if NO_WM_MODE else "OFF"
     prefix_text = CUSTOM_PREFIX if NAME_MODE == "custom" else "N/A"
     await event.reply(
-        f"**📊 Current Settings:**\n\n"
+        f"**📊 Current Settings v2.17:**\n\n"
         f"**Watermark:** `{CURRENT_WATERMARK}`\n"
         f"**WM Mode:** `{WATERMARK_MODE}`\n"
         f"**Size:** `{CURRENT_SIZE}`\n"
@@ -367,12 +367,12 @@ async def cancel_handler(event):
 @client.on(events.NewMessage(pattern=r'^/help|^/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark + Zip Bot v2.14**\n\n"
+        "**🔥 Text Watermark + Zip Bot v2.17**\n\n"
         "**🔐 Auth:** \n`/login password` `/logout`\n\n"
         "**⚙️ Settings:** \n`/set text` `/size 90` `/color white@1`\n`/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
         "**📦 Zip:** \n`/zip` = ON/OFF Toggle\n`/zipnow` = Foran Zip Banao\n"
         "**📋 Queue:** \n`/cancel`\n\n"
-        "**New:** Text ab kabhi bahar nahi jayega + Black box"
+        "**New:** FFmpeg 7 Fix + Force Inside"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
@@ -382,7 +382,7 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.14 - Force Inside Watermark")
+    print("BOT STARTED v2.17 - FFmpeg 7 Compatible")
     print(f"Backup Channel ID: {BACKUP_CHANNEL}")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
