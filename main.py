@@ -29,7 +29,6 @@ zip_queue_messages = {}
 
 # Settings
 CURRENT_WATERMARK = WATERMARK
-CURRENT_SIZE = 90 # UPDATED: 45 se 90 kiya
 CURRENT_COLOR = "white@1"
 DELETE_ORIGINAL = False
 NAME_MODE = "water_id"
@@ -38,6 +37,7 @@ WATERMARK_MODE = "bouncing"
 ZIP_MODE = False
 NO_WM_MODE = False
 ZIP_QUEUE = []
+WM_PERCENT = 0.05 # NAYA: Screen ka 5%. 0.03 = 3%, 0.08 = 8%
 
 async def worker():
     while True:
@@ -53,7 +53,7 @@ async def worker():
             except Exception as e:
                 if event.id not in cancel_flags and "Cancelled" not in str(e):
                     try:
-                        await event.reply(f"❌ Error: {str(e)[:100]}")
+                        await event.reply(f"❌ Error: {str(e)[:200]}")
                     except:
                         pass
             finally:
@@ -77,6 +77,7 @@ async def process_video(event, user_id):
     msg = None
     file = None
     output = None
+    ass_file = None
     user = await client.get_entity(user_id)
     username = f"@{user.username}" if user.username else f"{user.first_name}"
 
@@ -99,27 +100,57 @@ async def process_video(event, user_id):
         else:
             output = f"water_{event.id}.mp4"
 
-        # NO WM MODE CHECK
+        # SAFE WATERMARK
+        safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:")
+
+        # NO WM MODE
         if NO_WM_MODE:
             await msg.edit("📦 **No Watermark Mode** - Sirf copy kar raha")
             shutil.copy(file, output)
         else:
             await msg.edit("🎬 Watermark laga rahe...")
+
+            # STEP 1: Video ki width/height nikal lo
+            probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                         '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]
+            probe = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
+            stdout, _ = await probe.communicate()
+            w, h = map(int, stdout.decode().strip().split('x'))
+
+            # STEP 2: % BASED SIZE FORMULA
+            dynamic_size = int(w * WM_PERCENT)
+            final_size = max(20, min(150, dynamic_size)) # Min 20, Max 150
+
+            # STEP 3: Text ki width/height
+            text_w = final_size * 0.5 * len(safe_watermark)
+            text_h = final_size
+            margin = int(w * 0.02) # 2% margin
+
+            max_x = max(margin, w - text_w - margin)
+            max_y = max(margin, h - text_h - margin)
+
             if WATERMARK_MODE == "bouncing":
-                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:x='max(0\\,min(W-tw\\,abs(mod(120*t\\,W*2)-W)))':y='max(0\\,min(H-th\\,abs(mod(90*t\\,H*2)-H)))'"
+                speed_x = w / 10
+                speed_y = h / 12
+                x_formula = f"clamp({margin}\\,mod({speed_x}*t\\,{max_x})\\,{max_x})"
+                y_formula = f"clamp({margin}\\,mod({speed_y}*t\\,{max_y})\\,{max_y})"
             else:
-                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:x=20:y=20"
+                x_formula = f"clamp({margin}\\,{margin}\\,{max_x})"
+                y_formula = f"clamp({margin}\\,{margin}\\,{max_y})"
+
+            vf_filter = f"drawtext=text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
 
             cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
-            await proc.wait()
+            _, stderr = await proc.communicate()
             if proc.returncode!= 0:
-                raise Exception("FFmpeg failed")
+                error_text = stderr.decode()[:300]
+                raise Exception(f"FFmpeg failed: {error_text}")
 
         # ZIP MODE
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
-            wm_status = "No WM" if NO_WM_MODE else f"WM: {WATERMARK_MODE}"
+            wm_status = "No WM" if NO_WM_MODE else f"WM: {WATERMARK_MODE} {int(WM_PERCENT*100)}%"
             msg2 = await event.reply(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{wm_status}`\n`/zipnow` = Foran zip")
             if user_id not in zip_queue_messages: zip_queue_messages[user_id] = []
             zip_queue_messages[user_id].append(msg2.id)
@@ -134,7 +165,7 @@ async def process_video(event, user_id):
                 del queue_messages[event.id]
             await client.send_file(
                 event.chat_id, output,
-                caption=f"✅ Done | {'No Watermark' if NO_WM_MODE else f'WM: {WATERMARK_MODE}'}",
+                caption=f"✅ Done | {'No WM' if NO_WM_MODE else f'WM: {WATERMARK_MODE} Size: {final_size}px'}",
                 reply_to=event.id,
                 force_document=True,
                 progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id)
@@ -147,10 +178,11 @@ async def process_video(event, user_id):
 
     except Exception as e:
         if msg:
-            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)[:100]}")
+            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)[:200]}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
+            if ass_file and os.path.exists(ass_file): os.remove(ass_file)
         except: pass
 
 async def create_and_send_zip(chat_id, username, user_id):
@@ -162,7 +194,7 @@ async def create_and_send_zip(chat_id, username, user_id):
         for video in ZIP_QUEUE:
             if os.path.exists(video): zipf.write(video, os.path.basename(video))
     total = len(ZIP_QUEUE)
-    mode = 'No WM' if NO_WM_MODE else WATERMARK_MODE
+    mode = 'No WM' if NO_WM_MODE else f"{WATERMARK_MODE} {int(WM_PERCENT*100)}%"
     if user_id in zip_queue_messages and zip_queue_messages[user_id]:
         try: await client.delete_messages(chat_id, zip_queue_messages[user_id])
         except: pass
@@ -177,7 +209,6 @@ async def create_and_send_zip(chat_id, username, user_id):
 **Mode:** {mode}
 **Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}"""
             await client.send_file(BACKUP_CHANNEL, zip_name, caption=backup_caption)
-            print(f"✅ Backup sent to {BACKUP_CHANNEL}")
         except Exception as e: print(f"❌ Backup Error: {e}")
     for video in ZIP_QUEUE:
         if os.path.exists(video): os.remove(video)
@@ -237,20 +268,22 @@ async def wmmode_handler(event):
     WATERMARK_MODE = "static" if WATERMARK_MODE == "bouncing" else "bouncing"
     await event.reply(f"✅ **Watermark Mode: {WATERMARK_MODE.title()}**")
 
-@client.on(events.NewMessage(pattern=r'^/size'))
-async def size_handler(event):
-    global CURRENT_SIZE
+@client.on(events.NewMessage(pattern=r'^/wmpercent'))
+async def wmpercent_handler(event):
+    global WM_PERCENT
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     parts = event.text.split(maxsplit=1)
     if len(parts) > 1:
         try:
-            size = int(parts[1])
-            if 10 <= size <= 300: CURRENT_SIZE = size; await event.reply(f"✅ **Watermark Size:** `{CURRENT_SIZE}`") # 200 se 300 kiya
-            else: await event.reply("❌ Size 10 se 300 ke beech me rakho")
-        except: await event.reply("❌ Usage: `/size 90`")
+            percent = float(parts[1])
+            if 0.01 <= percent <= 0.20:
+                WM_PERCENT = percent
+                await event.reply(f"✅ **WM Size:** `{int(WM_PERCENT*100)}%` of screen width")
+            else: await event.reply("❌ 0.01 se 0.20 ke beech me rakho. Ex: `/wmpercent 0.05`")
+        except: await event.reply("❌ Usage: `/wmpercent 0.05`")
     else:
-        PENDING_STATES[event.sender_id] = "size"
-        await event.reply("Enter watermark size: 10 to 300")
+        PENDING_STATES[event.sender_id] = "wmpercent"
+        await event.reply("Enter % in decimal: `0.05` = 5%")
 
 @client.on(events.NewMessage(pattern=r'^/color'))
 async def color_handler(event):
@@ -259,7 +292,7 @@ async def color_handler(event):
     parts = event.text.split(maxsplit=1)
     if len(parts) > 1:
         CURRENT_COLOR = parts[1].strip()
-        await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`\nEx: `white@1`, `red@0.9`")
+        await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
     else:
         PENDING_STATES[event.sender_id] = "color"
         await event.reply("Enter color with opacity: `white@1` ya `red@0.9`")
@@ -305,19 +338,19 @@ async def setname_handler(event):
 
 @client.on(events.NewMessage(func=lambda e: e.sender_id in PENDING_STATES and not e.text.startswith('/')))
 async def input_handler(event):
-    global CURRENT_WATERMARK, DELETE_ORIGINAL, NAME_MODE, CUSTOM_PREFIX, CURRENT_SIZE, CURRENT_COLOR
+    global CURRENT_WATERMARK, DELETE_ORIGINAL, NAME_MODE, CUSTOM_PREFIX, CURRENT_COLOR, WM_PERCENT
     if event.sender_id not in PENDING_STATES: return
     state = PENDING_STATES.pop(event.sender_id)
     txt = event.text.strip()
     if state == "set": CURRENT_WATERMARK = txt; await event.reply(f"✅ **Watermark Updated**\n`{txt}`")
     elif state == "delete": DELETE_ORIGINAL = True if txt.lower() == 'on' else False; await event.reply(f"✅ **Delete Original: {DELETE_ORIGINAL}**")
-    elif state == "size":
-        try:
-            size = int(txt)
-            if 10 <= size <= 300: CURRENT_SIZE = size; await event.reply(f"✅ **Watermark Size:** `{CURRENT_SIZE}`")
-            else: await event.reply("❌ Size 10 se 300 ke beech me rakho")
-        except: await event.reply("❌ Number bhejo")
     elif state == "color": CURRENT_COLOR = txt; await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
+    elif state == "wmpercent":
+        try:
+            percent = float(txt)
+            if 0.01 <= percent <= 0.20: WM_PERCENT = percent; await event.reply(f"✅ **WM Size:** `{int(WM_PERCENT*100)}%`")
+            else: await event.reply("❌ 0.01 se 0.20 ke beech me rakho")
+        except: await event.reply("❌ Number bhejo")
     elif state == "setname":
         if txt == "original": NAME_MODE = "original"; await event.reply("✅ **Name Mode:** Original")
         elif txt == "water_id": NAME_MODE = "water_id"; await event.reply("✅ **Name Mode:** water_id")
@@ -334,10 +367,10 @@ async def current_handler(event):
     nowm_status = "ON" if NO_WM_MODE else "OFF"
     prefix_text = CUSTOM_PREFIX if NAME_MODE == "custom" else "N/A"
     await event.reply(
-        f"**📊 Current Settings:**\n\n"
+        f"**📊 Current Settings v2.24:**\n\n"
         f"**Watermark:** `{CURRENT_WATERMARK}`\n"
         f"**WM Mode:** `{WATERMARK_MODE}`\n"
-        f"**Size:** `{CURRENT_SIZE}`\n"
+        f"**WM Size:** `{int(WM_PERCENT*100)}%` of screen width\n"
         f"**Color:** `{CURRENT_COLOR}`\n"
         f"**No WM Mode:** `{nowm_status}`\n"
         f"**Zip Mode:** `{zip_status}`\n"
@@ -364,12 +397,12 @@ async def cancel_handler(event):
 @client.on(events.NewMessage(pattern=r'^/help|^/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark + Zip Bot v2.9**\n\n"
+        "**🔥 Text Watermark + Zip Bot v2.24**\n\n"
         "**🔐 Auth:** \n`/login password` `/logout`\n\n"
-        "**⚙️ Settings:** \n`/set text` `/size 90` `/color white@1`\n`/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
+        "**⚙️ Settings:** \n`/set text` `/wmpercent 0.05` `/color white@1`\n`/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
         "**📦 Zip:** \n`/zip` = ON/OFF Toggle\n`/zipnow` = Foran Zip Banao\n"
         "**📋 Queue:** \n`/cancel`\n\n"
-        "**Pro Tip:**\n`/nowm` ON + `/zip` ON = Sirf zip, koi WM nahi"
+        "**New:** % Based Size. Screen ka 5% WM"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
@@ -379,7 +412,7 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.9 - Default Size 90")
+    print("BOT STARTED v2.24 - % Based WM")
     print(f"Backup Channel ID: {BACKUP_CHANNEL}")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
