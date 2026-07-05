@@ -37,7 +37,7 @@ WATERMARK_MODE = "bouncing"
 ZIP_MODE = False
 NO_WM_MODE = False
 ZIP_QUEUE = []
-WM_PERCENT = 0.05 # NAYA: Screen ka 5%. 0.03 = 3%, 0.08 = 8%
+WM_PERCENT = 0.05 # Screen ka 5%. 0.03 = 3%, 0.08 = 8%
 
 async def worker():
     while True:
@@ -53,7 +53,7 @@ async def worker():
             except Exception as e:
                 if event.id not in cancel_flags and "Cancelled" not in str(e):
                     try:
-                        await event.reply(f"❌ Error: {str(e)[:200]}")
+                        await event.reply(f"❌ Error: {str(e)[:500]}")
                     except:
                         pass
             finally:
@@ -77,7 +77,6 @@ async def process_video(event, user_id):
     msg = None
     file = None
     output = None
-    ass_file = None
     user = await client.get_entity(user_id)
     username = f"@{user.username}" if user.username else f"{user.first_name}"
 
@@ -100,8 +99,8 @@ async def process_video(event, user_id):
         else:
             output = f"water_{event.id}.mp4"
 
-        # SAFE WATERMARK
-        safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:")
+        # SAFE WATERMARK - FFmpeg 7 ke liye
+        safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:").replace("%", "%%").replace("[", "\\[").replace("]", "\\]")
 
         # NO WM MODE
         if NO_WM_MODE:
@@ -110,21 +109,21 @@ async def process_video(event, user_id):
         else:
             await msg.edit("🎬 Watermark laga rahe...")
 
-            # STEP 1: Video ki width/height nikal lo
+            # STEP 1: Video ki width/height
             probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
                          '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]
             probe = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
             stdout, _ = await probe.communicate()
             w, h = map(int, stdout.decode().strip().split('x'))
 
-            # STEP 2: % BASED SIZE FORMULA
+            # STEP 2: % BASED SIZE
             dynamic_size = int(w * WM_PERCENT)
-            final_size = max(20, min(150, dynamic_size)) # Min 20, Max 150
+            final_size = max(20, min(150, dynamic_size))
 
-            # STEP 3: Text ki width/height
+            # STEP 3: Bounce Area
             text_w = final_size * 0.5 * len(safe_watermark)
             text_h = final_size
-            margin = int(w * 0.02) # 2% margin
+            margin = int(w * 0.02)
 
             max_x = max(margin, w - text_w - margin)
             max_y = max(margin, h - text_h - margin)
@@ -143,8 +142,10 @@ async def process_video(event, user_id):
             cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
+            
             if proc.returncode!= 0:
-                error_text = stderr.decode()[:300]
+                error_text = stderr.decode()
+                print(f"FFMPEG FULL ERROR: {error_text}")
                 raise Exception(f"FFmpeg failed: {error_text}")
 
         # ZIP MODE
@@ -178,11 +179,10 @@ async def process_video(event, user_id):
 
     except Exception as e:
         if msg:
-            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)[:200]}")
+            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
-            if ass_file and os.path.exists(ass_file): os.remove(ass_file)
         except: pass
 
 async def create_and_send_zip(chat_id, username, user_id):
@@ -367,7 +367,7 @@ async def current_handler(event):
     nowm_status = "ON" if NO_WM_MODE else "OFF"
     prefix_text = CUSTOM_PREFIX if NAME_MODE == "custom" else "N/A"
     await event.reply(
-        f"**📊 Current Settings v2.24:**\n\n"
+        f"**📊 Current Settings v2.24.2:**\n\n"
         f"**Watermark:** `{CURRENT_WATERMARK}`\n"
         f"**WM Mode:** `{WATERMARK_MODE}`\n"
         f"**WM Size:** `{int(WM_PERCENT*100)}%` of screen width\n"
@@ -397,12 +397,12 @@ async def cancel_handler(event):
 @client.on(events.NewMessage(pattern=r'^/help|^/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark + Zip Bot v2.24**\n\n"
+        "**🔥 Text Watermark + Zip Bot v2.24.2**\n\n"
         "**🔐 Auth:** \n`/login password` `/logout`\n\n"
         "**⚙️ Settings:** \n`/set text` `/wmpercent 0.05` `/color white@1`\n`/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
         "**📦 Zip:** \n`/zip` = ON/OFF Toggle\n`/zipnow` = Foran Zip Banao\n"
         "**📋 Queue:** \n`/cancel`\n\n"
-        "**New:** % Based Size. Screen ka 5% WM"
+        "**New:** % Based Size + FFmpeg 7 Fix"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
@@ -412,7 +412,7 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.24 - % Based WM")
+    print("BOT STARTED v2.24.2 - % Based WM + FFmpeg 7 Fix")
     print(f"Backup Channel ID: {BACKUP_CHANNEL}")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
