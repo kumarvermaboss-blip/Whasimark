@@ -26,9 +26,9 @@ PENDING_STATES = {}
 queue_messages = {}
 zip_queue_messages = {}
 
-# Settings
+# Settings v2.24.5 - Default Red
 CURRENT_WATERMARK = WATERMARK
-CURRENT_COLOR = "white@1"
+CURRENT_COLOR = "red@1" # <-- DEFAULT RED KAR DIYA
 DELETE_ORIGINAL = False
 NAME_MODE = "water_id"
 CUSTOM_PREFIX = "wm_"
@@ -51,25 +51,19 @@ async def worker():
                 await process_video(event, user_id)
             except Exception as e:
                 if event.id not in cancel_flags and "Cancelled" not in str(e):
-                    try:
-                        await event.reply(f"❌ Error: {str(e)[:500]}")
-                    except:
-                        pass
+                    try: await event.reply(f"❌ Error: {str(e)[:500]}")
+                    except: pass
             finally:
                 processing.discard(event.id)
-                if event.id in cancel_flags:
-                    del cancel_flags[event.id]
+                if event.id in cancel_flags: del cancel_flags[event.id]
                 queue.task_done()
 
 async def progress_callback(current, total, msg, action, event_id):
-    if event_id in cancel_flags:
-        raise Exception("Cancelled by user")
+    if event_id in cancel_flags: raise Exception("Cancelled by user")
     percent = int(current * 100 / total)
     if percent % 25 == 0 or percent == 100:
-        try:
-            await msg.edit(f"{action} {percent}%")
-        except:
-            pass
+        try: await msg.edit(f"{action} {percent}%")
+        except: pass
 
 async def process_video(event, user_id):
     global ZIP_QUEUE
@@ -84,11 +78,8 @@ async def process_video(event, user_id):
         msg = await client.send_message(user_id, f"⏳ **Queue #{q_pos}**\nMode: {'No WM' if NO_WM_MODE else WATERMARK_MODE}")
         queue_messages[event.id] = msg.id
 
-        file = await event.download_media(
-            progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id)
-        )
-        if event.id in cancel_flags:
-            raise Exception("Cancelled")
+        file = await event.download_media(progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id))
+        if event.id in cancel_flags: raise Exception("Cancelled")
 
         if NAME_MODE == "original":
             output = event.file.name if event.file and event.file.name else f"video_{event.id}.mp4"
@@ -97,7 +88,6 @@ async def process_video(event, user_id):
         else:
             output = f"water_{event.id}.mp4"
 
-        # FFmpeg 7 ke liye sanitize
         safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:").replace("%", "%%").replace("[", "\\[").replace("]", "\\]")
 
         if NO_WM_MODE:
@@ -106,26 +96,20 @@ async def process_video(event, user_id):
         else:
             await msg.edit("🎬 Watermark laga rahe...")
 
-            # STEP 1: Video size
-            probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                         '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]
+            probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]
             probe = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
             stdout, _ = await probe.communicate()
             w, h = map(int, stdout.decode().strip().split('x'))
 
-            # STEP 2: % BASED SIZE
             dynamic_size = int(w * WM_PERCENT)
             final_size = max(20, min(150, dynamic_size))
 
-            # STEP 3: Bounce Area
             text_w = final_size * 0.5 * len(safe_watermark)
             text_h = final_size
             margin = int(w * 0.02)
-
             max_x = max(margin, w - text_w - margin)
             max_y = max(margin, h - text_h - margin)
 
-            # NAYA FIX: clamp ki jagah min(max())
             if WATERMARK_MODE == "bouncing":
                 speed_x = w / 10
                 speed_y = h / 12
@@ -136,7 +120,6 @@ async def process_video(event, user_id):
                 y_formula = f"min(max({margin}\\,{margin})\\,{max_y})"
 
             vf_filter = f"drawtext=text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
-
             cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
@@ -163,7 +146,7 @@ async def process_video(event, user_id):
                 del queue_messages[event.id]
             await client.send_file(
                 event.chat_id, output,
-                caption=f"✅ Done | {'No WM' if NO_WM_MODE else f'WM: {WATERMARK_MODE} Size: {final_size}px'}",
+                caption=f"✅ Done | {'No WM' if NO_WM_MODE else f'WM: {WATERMARK_MODE} Size: {final_size}px Color: {CURRENT_COLOR}'}",
                 reply_to=event.id,
                 force_document=True,
                 progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id)
@@ -171,12 +154,10 @@ async def process_video(event, user_id):
             await msg.delete()
             if os.path.exists(output): os.remove(output)
 
-        if DELETE_ORIGINAL:
-            await event.delete()
+        if DELETE_ORIGINAL: await event.delete()
 
     except Exception as e:
-        if msg:
-            await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)}")
+        if msg: await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
@@ -217,8 +198,38 @@ async def login_handler(event):
         return
     if parts[1] == BOT_PASSWORD:
         AUTHORIZED_USERS.add(event.sender_id)
-        await event.reply('✅ **Login Success!**')
+        await event.reply('✅ **Login Success!**\n\n`/help` for commands')
     else: await event.reply('❌ Galat password.')
+
+@client.on(events.NewMessage(pattern=r'^/logout'))
+async def logout_handler(event):
+    if event.sender_id in AUTHORIZED_USERS:
+        AUTHORIZED_USERS.remove(event.sender_id)
+        await event.reply('✅ **Logout Success**')
+    else: await event.reply('❌ Pehle login hi nahi kiya')
+
+@client.on(events.NewMessage(pattern=r'^/set'))
+async def set_handler(event):
+    global CURRENT_WATERMARK
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        CURRENT_WATERMARK = parts[1].strip()
+        await event.reply(f"✅ **Watermark Updated**\n`{CURRENT_WATERMARK}`")
+    else:
+        PENDING_STATES[event.sender_id] = "set"
+        await event.reply("Please enter watermark text")
+
+@client.on(events.NewMessage(pattern=r'^/color'))
+async def color_handler(event):
+    global CURRENT_COLOR
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        CURRENT_COLOR = parts[1].strip()
+        await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
+    else:
+        await event.reply("**Color Examples:**\n`red@1` = Red\n`white@1` = White\n`yellow@0.9` = Yellow 90%")
 
 @client.on(events.NewMessage(pattern=r'^/wmpercent'))
 async def wmpercent_handler(event):
@@ -244,29 +255,38 @@ async def wmmode_handler(event):
     WATERMARK_MODE = "static" if WATERMARK_MODE == "bouncing" else "bouncing"
     await event.reply(f"✅ **Watermark Mode: {WATERMARK_MODE.title()}**")
 
-@client.on(events.NewMessage(pattern=r'^/set'))
-async def set_handler(event):
-    global CURRENT_WATERMARK
+@client.on(events.NewMessage(pattern=r'^/nowm'))
+async def nowm_toggle(event):
+    global NO_WM_MODE
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
+    NO_WM_MODE = not NO_WM_MODE
+    await event.reply(f"✅ **No Watermark Mode: {'ON' if NO_WM_MODE else 'OFF'}**")
+
+@client.on(events.NewMessage(pattern=r'^/delete'))
+async def delete_handler(event):
+    global DELETE_ORIGINAL
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
     parts = event.text.split(maxsplit=1)
     if len(parts) > 1:
-        CURRENT_WATERMARK = parts[1].strip()
-        await event.reply(f"✅ **Watermark Updated**\n`{CURRENT_WATERMARK}`")
+        DELETE_ORIGINAL = True if parts[1].lower() == 'on' else False
+        await event.reply(f"✅ **Delete Original: {DELETE_ORIGINAL}**")
     else:
-        PENDING_STATES[event.sender_id] = "set"
-        await event.reply("Please enter watermark text")
+        PENDING_STATES[event.sender_id] = "delete"
+        await event.reply("Enter `on` or `off`")
 
-@client.on(events.NewMessage(pattern=r'^/current'))
-async def current_handler(event):
+@client.on(events.NewMessage(pattern=r'^/setname'))
+async def setname_handler(event):
+    global NAME_MODE, CUSTOM_PREFIX
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    await event.reply(
-        f"**📊 Settings v2.24.3:**\n\n"
-        f"**Watermark:** `{CURRENT_WATERMARK}`\n"
-        f"**WM Mode:** `{WATERMARK_MODE}`\n"
-        f"**WM Size:** `{int(WM_PERCENT*100)}%`\n"
-        f"**Color:** `{CURRENT_COLOR}`\n"
-        f"**Zip Mode:** `{'ON' if ZIP_MODE else 'OFF'}`"
-    )
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        val = parts[1].strip()
+        if val == "original": NAME_MODE = "original"; await event.reply("✅ **Name Mode:** Original")
+        elif val == "water_id": NAME_MODE = "water_id"; await event.reply("✅ **Name Mode:** water_id")
+        elif val.startswith("custom"): CUSTOM_PREFIX = val[7:].strip() if len(val) > 6 else "wm_"; NAME_MODE = "custom"; await event.reply(f"✅ **Custom Prefix:** `{CUSTOM_PREFIX}`")
+    else:
+        PENDING_STATES[event.sender_id] = "setname"
+        await event.reply("Enter: `original`, `water_id`, ya `custom Prefix_`")
 
 @client.on(events.NewMessage(pattern=r'^/zip$'))
 async def zip_toggle(event):
@@ -284,19 +304,62 @@ async def zip_now(event):
     await event.reply(f"⏳ **{len(ZIP_QUEUE)} videos ki zip bana raha hun...**")
     await create_and_send_zip(event.chat_id, username, event.sender_id)
 
+@client.on(events.NewMessage(pattern=r'^/cancel'))
+async def cancel_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
+    if event.is_reply:
+        cancel_flags[(await event.get_reply_message()).id] = True
+        return await event.reply("🚫 **Cancelling this video...**")
+    count = 0
+    while not queue.empty():
+        try: cancel_flags[queue.get_nowait()[0].id] = True; count += 1; queue.task_done()
+        except: break
+    for pid in list(processing): cancel_flags[pid] = True; count += 1
+    await event.reply(f"🚫 **Cancelled {count} videos**" if count > 0 else "❌ **No videos in queue**")
+
+@client.on(events.NewMessage(pattern=r'^/current'))
+async def current_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
+    await event.reply(
+        f"**📊 Settings v2.24.5:**\n\n"
+        f"**Watermark:** `{CURRENT_WATERMARK}`\n"
+        f"**WM Mode:** `{WATERMARK_MODE}`\n"
+        f"**WM Size:** `{int(WM_PERCENT*100)}%`\n"
+        f"**Color:** `{CURRENT_COLOR}`\n"
+        f"**Zip Mode:** `{'ON' if ZIP_MODE else 'OFF'}`"
+    )
+
+@client.on(events.NewMessage(pattern=r'^/help|^/start'))
+async def help_handler(event):
+    await event.reply(
+        "**🔥 Text Watermark Bot v2.24.5**\n\n"
+        "**🔐 Auth:** `/login` `/logout`\n"
+        "**⚙️ Settings:** `/set` `/color` `/wmpercent` `/wmmode` `/nowm`\n"
+        "**📁 File:** `/delete` `/setname`\n"
+        "**📦 Zip:** `/zip` `/zipnow`\n"
+        "**📋 Queue:** `/cancel` `/current`\n\n"
+        "**Default Color:** `red@1`\nWhite ke liye: `/color white@1`"
+    )
+
 @client.on(events.NewMessage(func=lambda e: e.sender_id in PENDING_STATES and not e.text.startswith('/')))
 async def input_handler(event):
-    global CURRENT_WATERMARK, WM_PERCENT
+    global CURRENT_WATERMARK, DELETE_ORIGINAL, NAME_MODE, CUSTOM_PREFIX, CURRENT_COLOR, WM_PERCENT
     if event.sender_id not in PENDING_STATES: return
     state = PENDING_STATES.pop(event.sender_id)
     txt = event.text.strip()
     if state == "set": CURRENT_WATERMARK = txt; await event.reply(f"✅ **Watermark Updated**\n`{txt}`")
+    elif state == "delete": DELETE_ORIGINAL = True if txt.lower() == 'on' else False; await event.reply(f"✅ **Delete Original: {DELETE_ORIGINAL}**")
+    elif state == "color": CURRENT_COLOR = txt; await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
     elif state == "wmpercent":
         try:
             percent = float(txt)
             if 0.01 <= percent <= 0.20: WM_PERCENT = percent; await event.reply(f"✅ **WM Size:** `{int(WM_PERCENT*100)}%`")
             else: await event.reply("❌ 0.01 se 0.20 ke beech me rakho")
         except: await event.reply("❌ Number bhejo")
+    elif state == "setname":
+        if txt == "original": NAME_MODE = "original"; await event.reply("✅ **Name Mode:** Original")
+        elif txt == "water_id": NAME_MODE = "water_id"; await event.reply("✅ **Name Mode:** water_id")
+        elif txt.startswith("custom"): CUSTOM_PREFIX = txt[7:].strip() if len(txt) > 6 else "wm_"; NAME_MODE = "custom"; await event.reply(f"✅ **Custom Prefix:** `{CUSTOM_PREFIX}`")
     elif state == "login":
         if txt == BOT_PASSWORD: AUTHORIZED_USERS.add(event.sender_id); await event.reply('✅ **Login Success!**')
         else: await event.reply('❌ Galat password.')
@@ -309,7 +372,7 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.24.3 - min/max Fix")
+    print("BOT STARTED v2.24.5 - Default Red Color")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
     print("✅ Bot Online!")
