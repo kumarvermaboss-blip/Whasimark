@@ -29,8 +29,8 @@ zip_queue_messages = {}
 
 # Settings
 CURRENT_WATERMARK = WATERMARK
-CURRENT_SIZE = 45
-CURRENT_COLOR = "white@1" # UPDATED: Default White
+CURRENT_SIZE = 90
+CURRENT_COLOR = "white@1"
 DELETE_ORIGINAL = False
 NAME_MODE = "water_id"
 CUSTOM_PREFIX = "wm_"
@@ -105,16 +105,19 @@ async def process_video(event, user_id):
             shutil.copy(file, output)
         else:
             await msg.edit("🎬 Watermark laga rahe...")
+
+            # v2.14 FIX: Force andar + max width 90%
             if WATERMARK_MODE == "bouncing":
-                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:x='max(0\\,min(W-tw\\,abs(mod(120*t\\,W*2)-W)))':y='max(0\\,min(H-th\\,abs(mod(90*t\\,H*2)-H)))'"
+                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:box=1:boxcolor=black@0.5:boxborderw=5:x='clamp(5\\,mod(120*t\\,w-text_w-10)\\,w-text_w-5)':y='clamp(5\\,mod(90*t\\,h-text_h-10)\\,h-text_h-5)':max_glyph_width=w*0.9"
             else:
-                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontfile={FONT_FILE}:fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:x=20:y=20"
+                vf_filter = f"drawtext=text='{CURRENT_WATERMARK}':fontsize={CURRENT_SIZE}:fontcolor={CURRENT_COLOR}:box=1:boxcolor=black@0.5:boxborderw=5:x='clamp(5\\,20\\,w-text_w-5)':y='clamp(5\\,20\\,h-text_h-5)':max_glyph_width=w*0.9"
 
             cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
-            await proc.wait()
+            _, stderr = await proc.communicate()
             if proc.returncode!= 0:
-                raise Exception("FFmpeg failed")
+                error_text = stderr.decode()[:200]
+                raise Exception(f"FFmpeg failed: {error_text}")
 
         # ZIP MODE
         if ZIP_MODE:
@@ -245,12 +248,12 @@ async def size_handler(event):
     if len(parts) > 1:
         try:
             size = int(parts[1])
-            if 10 <= size <= 200: CURRENT_SIZE = size; await event.reply(f"✅ **Watermark Size:** `{CURRENT_SIZE}`")
-            else: await event.reply("❌ Size 10 se 200 ke beech me rakho")
-        except: await event.reply("❌ Usage: `/size 45`")
+            if 10 <= size <= 300: CURRENT_SIZE = size; await event.reply(f"✅ **Watermark Size:** `{CURRENT_SIZE}`")
+            else: await event.reply("❌ Size 10 se 300 ke beech me rakho")
+        except: await event.reply("❌ Usage: `/size 90`")
     else:
         PENDING_STATES[event.sender_id] = "size"
-        await event.reply("Enter watermark size: 10 to 200")
+        await event.reply("Enter watermark size: 10 to 300")
 
 @client.on(events.NewMessage(pattern=r'^/color'))
 async def color_handler(event):
@@ -314,8 +317,8 @@ async def input_handler(event):
     elif state == "size":
         try:
             size = int(txt)
-            if 10 <= size <= 200: CURRENT_SIZE = size; await event.reply(f"✅ **Watermark Size:** `{CURRENT_SIZE}`")
-            else: await event.reply("❌ Size 10 se 200 ke beech me rakho")
+            if 10 <= size <= 300: CURRENT_SIZE = size; await event.reply(f"✅ **Watermark Size:** `{CURRENT_SIZE}`")
+            else: await event.reply("❌ Size 10 se 300 ke beech me rakho")
         except: await event.reply("❌ Number bhejo")
     elif state == "color": CURRENT_COLOR = txt; await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
     elif state == "setname":
@@ -364,12 +367,12 @@ async def cancel_handler(event):
 @client.on(events.NewMessage(pattern=r'^/help|^/start'))
 async def help_handler(event):
     await event.reply(
-        "**🔥 Text Watermark + Zip Bot v2.8**\n\n"
+        "**🔥 Text Watermark + Zip Bot v2.14**\n\n"
         "**🔐 Auth:** \n`/login password` `/logout`\n\n"
-        "**⚙️ Settings:** \n`/set text` `/size 45` `/color white@1`\n`/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
+        "**⚙️ Settings:** \n`/set text` `/size 90` `/color white@1`\n`/wmmode` `/nowm`\n`/delete on/off` `/setname` `/current`\n\n"
         "**📦 Zip:** \n`/zip` = ON/OFF Toggle\n`/zipnow` = Foran Zip Banao\n"
         "**📋 Queue:** \n`/cancel`\n\n"
-        "**Pro Tip:**\n`/nowm` ON + `/zip` ON = Sirf zip, koi WM nahi"
+        "**New:** Text ab kabhi bahar nahi jayega + Black box"
     )
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
@@ -379,7 +382,7 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.8 - Default White")
+    print("BOT STARTED v2.14 - Force Inside Watermark")
     print(f"Backup Channel ID: {BACKUP_CHANNEL}")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
