@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import asyncio
 from telethon import TelegramClient, events, Button
 import zipfile
@@ -23,6 +25,7 @@ AUTHORIZED_USERS = set()
 PENDING_STATES = {}
 queue_messages = {}
 ZIP_QUEUE = []
+last_edit = {}
 
 CURRENT_WATERMARK = WATERMARK
 CURRENT_COLOR = "red@1"
@@ -38,8 +41,9 @@ async def worker():
     while True:
         event, user_id = await queue.get()
         async with semaphore:
-            if event.id in cancel_flags:
-                del cancel_flags[event.id]
+            if event.id in cancel_flags or user_id in cancel_flags:
+                cancel_flags.pop(event.id, None)
+                cancel_flags.pop(user_id, None)
                 queue.task_done()
                 continue
             processing.add(event.id)
@@ -49,13 +53,16 @@ async def worker():
                 print(f"WORKER ERROR: {e}")
             finally:
                 processing.discard(event.id)
-                if event.id in cancel_flags: del cancel_flags[event.id]
+                cancel_flags.pop(event.id, None)
                 queue.task_done()
 
-async def progress_callback(current, total, msg, action, event_id):
-    if event_id in cancel_flags: raise Exception("Cancelled by user")
+async def progress_callback(current, total, msg, action, event_id, user_id):
+    if event_id in cancel_flags or user_id in cancel_flags:
+        raise asyncio.CancelledError("Cancelled by user")
     percent = int(current * 100 / total)
-    if percent % 10 == 0 or percent == 100:
+    now = time.time()
+    if (percent % 20 == 0 or percent == 100) and (now - last_edit.get(msg.id, 0) > 3):
+        last_edit[msg.id] = now
         try: await msg.edit(f"{action} {percent}%")
         except: pass
 
@@ -69,8 +76,8 @@ async def process_video(event, user_id):
         msg = await client.send_message(user_id, f"⏳ **Queue #{q_pos}**")
         queue_messages[event.id] = msg.id
 
-        file = await event.download_media(progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id))
-        if event.id in cancel_flags: raise Exception("Cancelled")
+        file = await event.download_media(progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id, user_id))
+        if event.id in cancel_flags or user_id in cancel_flags: raise asyncio.CancelledError("Cancelled")
 
         if NAME_MODE == "original":
             output = event.file.name if event.file and event.file.name else f"video_{event.id}.mp4"
@@ -96,27 +103,21 @@ async def process_video(event, user_id):
             temp_file = None
 
             if needs_compress:
-                # ===== STEP 1: COMPRESS =====
                 await msg.edit(f"🗜️ **Step 1/2: Compressing to 720p...** `{original_size_mb:.1f}MB`")
                 temp_file = f"temp_{event.id}.mp4"
                 cmd1 = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale=-2:720", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', temp_file, '-y']
                 proc1 = await asyncio.create_subprocess_exec(*cmd1, stderr=asyncio.subprocess.PIPE)
                 _, _ = await proc1.communicate()
                 if proc1.returncode!= 0: raise Exception("FFmpeg Step 1 Error")
-
-                # Compress ke baad nayi file ka width nikal lo WM ke liye
                 file_for_wm = temp_file
                 probe_cmd2 = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', temp_file]
                 probe2 = await asyncio.create_subprocess_exec(*probe_cmd2, stdout=asyncio.subprocess.PIPE)
                 stdout2, _ = await probe2.communicate()
                 w, h = map(int, stdout2.decode().strip().split('x'))
 
-            # ===== STEP 2: WM LAGAO =====
             await msg.edit("🎬 **Step 2/2: Watermark laga rahe...**")
-
             dynamic_size = int(w * WM_PERCENT)
             final_size = max(20, min(150, dynamic_size))
-
             text_w = final_size * 0.5 * len(safe_watermark)
             margin = int(w * 0.02)
             max_x = max(margin, w - text_w - margin)
@@ -132,13 +133,11 @@ async def process_video(event, user_id):
                 y_formula = f"{margin}"
 
             vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
-
             crf_val = '26' if needs_compress else '24'
             cmd2 = ['ffmpeg', '-threads', '1', '-i', file_for_wm, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', crf_val, '-c:a', 'copy', output, '-y']
             proc2 = await asyncio.create_subprocess_exec(*cmd2, stderr=asyncio.subprocess.PIPE)
             _, _ = await proc2.communicate()
             if proc2.returncode!= 0: raise Exception("FFmpeg Step 2 Error")
-
             if temp_file and os.path.exists(temp_file): os.remove(temp_file)
 
         if ZIP_MODE:
@@ -147,18 +146,21 @@ async def process_video(event, user_id):
         else:
             if event.id in queue_messages: await client.delete_messages(user_id, queue_messages[event.id])
             final_size_mb = os.path.getsize(output) / (1024*1024)
-            await client.send_file(event.chat_id, output, caption=f"✅ Done | Size: `{original_size_mb:.1f}MB` > `{final_size_mb:.1f}MB`", reply_to=event.id, force_document=True, progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id))
+            await client.send_file(event.chat_id, output, caption=f"✅ Done | Size: `{original_size_mb:.1f}MB` > `{final_size_mb:.1f}MB`", reply_to=event.id, force_document=True, progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id, user_id))
             await msg.delete()
             if os.path.exists(output): os.remove(output)
         if DELETE_ORIGINAL: await event.delete()
+
+    except asyncio.CancelledError:
+        if msg: await msg.edit("🚫 Cancelled by user")
     except Exception as e:
-        if msg: await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {e}")
+        if msg: await msg.edit(f"❌ Failed: {e}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
         except: pass
 
-# ===== WIZARD + COMMANDS v2.25.5b =====
+# ===== WIZARD + COMMANDS v2.25.11b =====
 @client.on(events.NewMessage(pattern=r'^/start'))
 async def start_handler(event):
     buttons = [
@@ -168,9 +170,9 @@ async def start_handler(event):
         [Button.inline('📐 WM Size %', b'wmpercent'), Button.inline('🔄 WM Mode', b'wmmode')],
         [Button.inline('🚫 No WM', b'nowm'), Button.inline('🗑️ Delete Orig', b'delete')],
         [Button.inline('📝 File Name', b'setname'), Button.inline('📦 Zip Mode', b'zip')],
-        [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel')]
+        [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel_menu')]
     ]
-    await event.reply('**WMark Bot v2.25.5b**\nNeeche se setting select karo:', buttons=buttons)
+    await event.reply('**WMark Bot v2.25.11b**\nNeeche se setting select karo:', buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -180,23 +182,63 @@ async def callback_handler(event):
 
     if data == 'login': await event.respond('🔑 Password bhejo: `/login password`')
     elif data == 'logout': AUTHORIZED_USERS.discard(user_id); await event.respond('✅ Logged Out')
-    elif data == 'current':
-        await event.respond(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
-    elif data == 'help':
-        await event.respond("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel")
+    elif data == 'current': await event.respond(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
+    elif data == 'help': await event.respond("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel /cancel all /cancel 1")
+    elif data == 'cancel_menu': await show_cancel_menu(event, user_id)
+    elif data.startswith('cancel_'):
+        action = data.split('_')[1]
+        await handle_cancel_action(event, user_id, action)
     elif data == 'set': PENDING_STATES[user_id] = 'set'; await event.respond('Please enter watermark text')
     elif data == 'color': PENDING_STATES[user_id] = 'color'; await event.respond('Color Examples:\nred@1 = Red\nwhite@1 = White\nyellow@0.9 = Yellow 90%')
     elif data == 'wmpercent': PENDING_STATES[user_id] = 'wmpercent'; await event.respond('Enter size percentage: 0.03 to 0.08')
-    elif data == 'wmmode':
-        WATERMARK_MODE = 'static' if WATERMARK_MODE=='bouncing' else 'bouncing'
-        await event.respond(f'WM Mode: {WATERMARK_MODE}')
+    elif data == 'wmmode': WATERMARK_MODE = 'static' if WATERMARK_MODE=='bouncing' else 'bouncing'; await event.respond(f'WM Mode: {WATERMARK_MODE}')
     elif data == 'nowm': NO_WM_MODE = not NO_WM_MODE; await event.respond(f'NoWM: {NO_WM_MODE}')
     elif data == 'delete': PENDING_STATES[user_id] = 'delete'; await event.respond('Enter on or off')
     elif data == 'setname': PENDING_STATES[user_id] = 'setname'; await event.respond('Enter: original / custom / water_id')
     elif data == 'zip': ZIP_MODE = not ZIP_MODE; await event.respond(f'Zip: {ZIP_MODE}')
     elif data == 'zipnow': await zip_handler(event)
-    elif data == 'cancel': await cancel_handler(event)
     await event.answer()
+
+async def show_cancel_menu(event, user_id):
+    buttons = []
+    if processing:
+        buttons.append([Button.inline('❌ Current Video', b'cancel_current')])
+    if not queue.empty():
+        q_list = list(queue._queue)
+        for i in range(min(len(q_list), 5)):
+            buttons.append([Button.inline(f'🚫 Cancel Queue #{i+1}', f'cancel_q_{i+1}'.encode())])
+    if processing or not queue.empty():
+        buttons.append([Button.inline('🔥 Cancel ALL', b'cancel_all')])
+    if not buttons:
+        await event.respond("🚫 Cancel karne ke liye kuch nahi hai")
+        return
+    await event.respond("**Kya Cancel karna hai?**", buttons=buttons)
+
+async def handle_cancel_action(event, user_id, action):
+    if action == 'current':
+        cancel_flags[user_id] = True
+        for pid in list(processing): cancel_flags[pid] = True
+        await event.respond("🚫 Current video cancelled")
+    elif action == 'all':
+        cancel_flags[user_id] = True
+        for pid in list(processing): cancel_flags[pid] = True
+        while not queue.empty(): await queue.get()
+        await event.respond("🚫 All Cancelled")
+    elif action.startswith('q_'):
+        num = int(action.split('_')[1])
+        temp_queue = asyncio.Queue()
+        skipped = False
+        found_pos = 0
+        while not queue.empty():
+            e, uid = await queue.get()
+            found_pos += 1
+            if found_pos == num and not skipped:
+                await event.respond(f"🚫 Queue #{num} skip kar di")
+                skipped = True
+                queue.task_done()
+                continue
+            await temp_queue.put((e, uid))
+        while not temp_queue.empty(): await queue.put(await temp_queue.get())
 
 @client.on(events.NewMessage)
 async def pending_handler(event):
@@ -212,8 +254,7 @@ async def pending_handler(event):
         elif state == 'delete': DELETE_ORIGINAL = text.lower() == 'on'; await event.reply(f'Delete: {DELETE_ORIGINAL}')
 
 @client.on(events.NewMessage(pattern=r'^/help'))
-async def help_handler(event):
-    await event.reply("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel")
+async def help_handler(event): await event.reply("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel /cancel all /cancel 1")
 
 @client.on(events.NewMessage(pattern=r'^/current'))
 async def current_handler(event):
@@ -283,10 +324,34 @@ async def zip_toggle_handler(event):
     if event.sender_id not in AUTHORIZED_USERS: return
     global ZIP_MODE; ZIP_MODE = not ZIP_MODE; await event.reply(f'Zip: {ZIP_MODE}')
 
-@client.on(events.NewMessage(pattern=r'^/cancel'))
+@client.on(events.NewMessage(pattern=r'^/cancel(?:\s+(all|\d+))?$'))
 async def cancel_handler(event):
-    cancel_flags[event.id] = True
-    await event.reply("🚫 Queue Cancelled")
+    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 /login password')
+    match = re.match(r'^/cancel(?:\s+(all|\d+))?$', event.text)
+    arg = match.group(1)
+    if arg == 'all':
+        cancel_flags[event.sender_id] = True
+        for pid in list(processing): cancel_flags[pid] = True
+        while not queue.empty(): await queue.get()
+        await event.reply("🚫 All Cancelled")
+    elif arg and arg.isdigit():
+        num = int(arg)
+        temp_queue = asyncio.Queue()
+        skipped = False
+        found_pos = 0
+        while not queue.empty():
+            e, uid = await queue.get()
+            found_pos += 1
+            if found_pos == num and not skipped:
+                await event.reply(f"🚫 Queue #{num} skip kar di")
+                skipped = True
+                queue.task_done()
+                continue
+            await temp_queue.put((e, uid))
+        while not temp_queue.empty(): await queue.put(await temp_queue.get())
+        if not skipped: await event.reply(f"Queue #{num} nahi mili")
+    else:
+        await show_cancel_menu(event, event.sender_id)
 
 @client.on(events.NewMessage(pattern=r'^/zipnow'))
 async def zip_handler(event):
@@ -310,7 +375,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.25.5b")
+    print("✅ Bot Online v2.25.11b")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
