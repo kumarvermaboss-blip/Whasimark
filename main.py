@@ -13,7 +13,7 @@ if BACKUP_CHANNEL: BACKUP_CHANNEL = int(BACKUP_CHANNEL)
 
 WATERMARK = os.environ.get("WATERMARK", "@bvsrv1")
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "1"))
-MAX_SIZE_MB = 180
+MAX_SIZE_MB = 180 # v2.25.2: 180MB se bari reject
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
@@ -24,9 +24,9 @@ cancel_flags = {}
 AUTHORIZED_USERS = set()
 PENDING_STATES = {}
 queue_messages = {}
-zip_queue_messages = {}
+ZIP_QUEUE = []
 
-# v2.25.1 Settings
+# v2.25.2 Settings
 CURRENT_WATERMARK = WATERMARK
 CURRENT_COLOR = "red@1"
 DELETE_ORIGINAL = False
@@ -35,7 +35,6 @@ CUSTOM_PREFIX = "wm_"
 WATERMARK_MODE = "bouncing"
 ZIP_MODE = False
 NO_WM_MODE = False
-ZIP_QUEUE = []
 WM_PERCENT = 0.05
 
 async def worker():
@@ -59,7 +58,7 @@ async def worker():
 async def progress_callback(current, total, msg, action, event_id):
     if event_id in cancel_flags: raise Exception("Cancelled by user")
     percent = int(current * 100 / total)
-    if percent % 20 == 0 or percent == 100:
+    if percent % 10 == 0 or percent == 100:
         try: await msg.edit(f"{action} {percent}%")
         except: pass
 
@@ -114,6 +113,7 @@ async def process_video(event, user_id):
 
             vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
 
+            # v2.25.2 COMPRESS LOGIC
             if file_size_mb > 80:
                 await msg.edit(f"🗜️ **Compressing...** `{file_size_mb:.1f}MB` > ~70MB")
                 cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale=-2:720,{vf_filter}", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', output, '-y']
@@ -123,7 +123,7 @@ async def process_video(event, user_id):
 
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
-            if proc.returncode!= 0: raise Exception(f"FFmpeg Error: {stderr.decode().split(chr(10))[0]}")
+            if proc.returncode!= 0: raise Exception(f"FFmpeg Error: {stderr.decode().split(chr(10))[0][:300]}")
 
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
@@ -142,7 +142,7 @@ async def process_video(event, user_id):
             if file and os.path.exists(file): os.remove(file)
         except: pass
 
-# ===== WIZARD COMMANDS v2.25.1 =====
+# ===== WIZARD + COMMANDS v2.25.2 =====
 @client.on(events.NewMessage(pattern=r'^/start'))
 async def start_handler(event):
     buttons = [
@@ -154,7 +154,7 @@ async def start_handler(event):
         [Button.inline('📝 File Name', b'setname'), Button.inline('📦 Zip Mode', b'zip')],
         [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel')]
     ]
-    await event.reply('**WMark Bot v2.25.1 Wizard**\nNeeche se setting select karo:', buttons=buttons)
+    await event.reply('**WMark Bot v2.25.2 Wizard**\nNeeche se setting select karo:', buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -165,7 +165,7 @@ async def callback_handler(event):
     if data == 'login': await event.respond('🔑 Password bhejo: `/login password`')
     elif data == 'logout': AUTHORIZED_USERS.discard(user_id); await event.respond('✅ Logged Out')
     elif data == 'current': await event.respond(f"**Settings:**\nWM: `{CURRENT_WATERMARK}`\nColor: `{CURRENT_COLOR}`\nMode: `{WATERMARK_MODE}`\nSize%: `{WM_PERCENT}`\nZip: `{ZIP_MODE}`\nNoWM: `{NO_WM_MODE}`\nDelete: `{DELETE_ORIGINAL}`\nName: `{NAME_MODE}`")
-    elif data == 'help': await event.respond('**Commands:**\n`/login pass` `/logout` `/set text` `/color red@1` `/wmpercent 0.05` `/wmmode` `/nowm` `/delete` `/setname original/custom/water_id` `/zip` `/zipnow` `/cancel`')
+    elif data == 'help': await event.respond('**Commands:**\n`/login pass` `/logout` `/current`\n`/set text` `/color red@1` `/wmpercent 0.05`\n`/wmmode` `/nowm` `/delete` `/setname mode`\n`/zip` `/zipnow` `/cancel`')
     elif data == 'set': PENDING_STATES[user_id] = 'set'; await event.respond('✏️ Naya watermark text bhejo')
     elif data == 'color': PENDING_STATES[user_id] = 'color'; await event.respond('🎨 Color bhejo: `red@1` `white@1` `yellow@1`')
     elif data == 'wmpercent': PENDING_STATES[user_id] = 'wmpercent'; await event.respond('📐 Size % bhejo: `0.03` to `0.08`')
@@ -192,6 +192,15 @@ async def pending_handler(event):
         elif state == 'wmpercent': WM_PERCENT = float(text); await event.reply(f'✅ WM Size%: `{text}`')
         elif state == 'setname': NAME_MODE = text; CUSTOM_PREFIX = "wm_" if text=="custom" else ""; await event.reply(f'✅ Name Mode: `{text}`')
 
+# Direct Command Handlers
+@client.on(events.NewMessage(pattern=r'^/help'))
+async def help_handler(event): await event.reply('**Commands:**\n`/login pass` `/logout` `/current`\n`/set text` `/color red@1` `/wmpercent 0.05`\n`/wmmode` `/nowm` `/delete` `/setname mode`\n`/zip` `/zipnow` `/cancel`')
+
+@client.on(events.NewMessage(pattern=r'^/current'))
+async def current_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    await event.reply(f"**Current Settings:**\nWM: `{CURRENT_WATERMARK}`\nColor: `{CURRENT_COLOR}`\nMode: `{WATERMARK_MODE}`\nSize%: `{WM_PERCENT}`\nZip: `{ZIP_MODE}`\nNoWM: `{NO_WM_MODE}`\nDelete: `{DELETE_ORIGINAL}`\nName: `{NAME_MODE}`")
+
 @client.on(events.NewMessage(pattern=r'^/login (.+)'))
 async def login_handler(event):
     if event.text.split(maxsplit=1)[1] == BOT_PASSWORD: AUTHORIZED_USERS.add(event.sender_id); await event.reply('✅ **Login Success!**')
@@ -199,6 +208,46 @@ async def login_handler(event):
 
 @client.on(events.NewMessage(pattern=r'^/logout'))
 async def logout_handler(event): AUTHORIZED_USERS.discard(event.sender_id); await event.reply('✅ Logged Out')
+
+@client.on(events.NewMessage(pattern=r'^/set (.+)'))
+async def set_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global CURRENT_WATERMARK; CURRENT_WATERMARK = event.text.split(maxsplit=1)[1]; await event.reply(f'✅ WM Text: `{CURRENT_WATERMARK}`')
+
+@client.on(events.NewMessage(pattern=r'^/color (.+)'))
+async def color_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global CURRENT_COLOR; CURRENT_COLOR = event.text.split(maxsplit=1)[1]; await event.reply(f'✅ Color: `{CURRENT_COLOR}`')
+
+@client.on(events.NewMessage(pattern=r'^/wmpercent (.+)'))
+async def wmpercent_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global WM_PERCENT; WM_PERCENT = float(event.text.split(maxsplit=1)[1]); await event.reply(f'✅ WM Size%: `{WM_PERCENT}`')
+
+@client.on(events.NewMessage(pattern=r'^/wmmode'))
+async def wmmode_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global WATERMARK_MODE; WATERMARK_MODE = 'static' if WATERMARK_MODE=='bouncing' else 'bouncing'; await event.reply(f'✅ WM Mode: `{WATERMARK_MODE}`')
+
+@client.on(events.NewMessage(pattern=r'^/nowm'))
+async def nowm_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global NO_WM_MODE; NO_WM_MODE = not NO_WM_MODE; await event.reply(f'✅ No WM Mode: `{NO_WM_MODE}`')
+
+@client.on(events.NewMessage(pattern=r'^/delete'))
+async def delete_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global DELETE_ORIGINAL; DELETE_ORIGINAL = not DELETE_ORIGINAL; await event.reply(f'✅ Delete Original: `{DELETE_ORIGINAL}`')
+
+@client.on(events.NewMessage(pattern=r'^/setname (.+)'))
+async def setname_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global NAME_MODE, CUSTOM_PREFIX; NAME_MODE = event.text.split(maxsplit=1)[1]; CUSTOM_PREFIX = "wm_" if NAME_MODE=="custom" else ""; await event.reply(f'✅ Name Mode: `{NAME_MODE}`')
+
+@client.on(events.NewMessage(pattern=r'^/zip'))
+async def zip_toggle_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global ZIP_MODE; ZIP_MODE = not ZIP_MODE; await event.reply(f'✅ Zip Mode: `{ZIP_MODE}`')
 
 @client.on(events.NewMessage(pattern=r'^/cancel'))
 async def cancel_handler(event):
@@ -227,7 +276,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.25.1 WIZARD FIXED")
+    print("✅ Bot Online v2.25.2")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
