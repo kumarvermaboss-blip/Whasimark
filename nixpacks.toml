@@ -5,4 +5,4 @@ nixPkgs = ['ffmpeg', 'fonts-dejavu']
 cmds = ['pip install -r requirements.txt']
 
 [start]
-cmd = "python bot.py"
+cmd = "python main.py"
