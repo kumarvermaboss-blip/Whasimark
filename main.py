@@ -80,7 +80,8 @@ async def process_video(event, user_id):
             output = f"water_{event.id}.mp4"
 
         safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:").replace("%", "%%")
-        file_size_mb = os.path.getsize(file) / (1024*1024)
+        original_size_mb = os.path.getsize(file) / (1024*1024)
+        needs_compress = original_size_mb > 80
 
         if NO_WM_MODE:
             await msg.edit("📦 **No Watermark Mode**")
@@ -90,6 +91,28 @@ async def process_video(event, user_id):
             probe = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
             stdout, _ = await probe.communicate()
             w, h = map(int, stdout.decode().strip().split('x'))
+
+            file_for_wm = file
+            temp_file = None
+
+            if needs_compress:
+                # ===== STEP 1: COMPRESS =====
+                await msg.edit(f"🗜️ **Step 1/2: Compressing to 720p...** `{original_size_mb:.1f}MB`")
+                temp_file = f"temp_{event.id}.mp4"
+                cmd1 = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale=-2:720", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', temp_file, '-y']
+                proc1 = await asyncio.create_subprocess_exec(*cmd1, stderr=asyncio.subprocess.PIPE)
+                _, _ = await proc1.communicate()
+                if proc1.returncode!= 0: raise Exception("FFmpeg Step 1 Error")
+
+                # Compress ke baad nayi file ka width nikal lo WM ke liye
+                file_for_wm = temp_file
+                probe_cmd2 = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', temp_file]
+                probe2 = await asyncio.create_subprocess_exec(*probe_cmd2, stdout=asyncio.subprocess.PIPE)
+                stdout2, _ = await probe2.communicate()
+                w, h = map(int, stdout2.decode().strip().split('x'))
+
+            # ===== STEP 2: WM LAGAO =====
+            await msg.edit("🎬 **Step 2/2: Watermark laga rahe...**")
 
             dynamic_size = int(w * WM_PERCENT)
             final_size = max(20, min(150, dynamic_size))
@@ -110,32 +133,13 @@ async def process_video(event, user_id):
 
             vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
 
-            # ===== v2.25.5a: COMPRESS FIRST THEN WM =====
-            if file_size_mb > 80:
-                # STEP 1: Pehle 720p compress
-                await msg.edit(f"🗜️ **Step 1/2: Compressing to 720p...** `{file_size_mb:.1f}MB`")
+            crf_val = '26' if needs_compress else '24'
+            cmd2 = ['ffmpeg', '-threads', '1', '-i', file_for_wm, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', crf_val, '-c:a', 'copy', output, '-y']
+            proc2 = await asyncio.create_subprocess_exec(*cmd2, stderr=asyncio.subprocess.PIPE)
+            _, _ = await proc2.communicate()
+            if proc2.returncode!= 0: raise Exception("FFmpeg Step 2 Error")
 
-                temp_file = f"temp_{event.id}.mp4"
-                cmd1 = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale=-2:720", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', temp_file, '-y']
-                proc1 = await asyncio.create_subprocess_exec(*cmd1, stderr=asyncio.subprocess.PIPE)
-                _, _ = await proc1.communicate()
-                if proc1.returncode!= 0: raise Exception("FFmpeg Step 1 Error")
-
-                # STEP 2: Ab compress hui file pe WM lagao
-                await msg.edit("🎬 **Step 2/2: Watermark laga rahe...**")
-
-                cmd2 = ['ffmpeg', '-threads', '1', '-i', temp_file, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-c:a', 'copy', output, '-y']
-                proc2 = await asyncio.create_subprocess_exec(*cmd2, stderr=asyncio.subprocess.PIPE)
-                _, _ = await proc2.communicate()
-                if proc2.returncode!= 0: raise Exception("FFmpeg Step 2 Error")
-
-                if os.path.exists(temp_file): os.remove(temp_file) # temp delete
-            else:
-                await msg.edit("🎬 Watermark laga rahe...")
-                cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-c:a', 'copy', output, '-y']
-                proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
-                _, stderr = await proc.communicate()
-                if proc.returncode!= 0: raise Exception(f"FFmpeg Error")
+            if temp_file and os.path.exists(temp_file): os.remove(temp_file)
 
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
@@ -143,18 +147,18 @@ async def process_video(event, user_id):
         else:
             if event.id in queue_messages: await client.delete_messages(user_id, queue_messages[event.id])
             final_size_mb = os.path.getsize(output) / (1024*1024)
-            await client.send_file(event.chat_id, output, caption=f"✅ Done | Size: `{file_size_mb:.1f}MB` > `{final_size_mb:.1f}MB`", reply_to=event.id, force_document=True, progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id))
+            await client.send_file(event.chat_id, output, caption=f"✅ Done | Size: `{original_size_mb:.1f}MB` > `{final_size_mb:.1f}MB`", reply_to=event.id, force_document=True, progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id))
             await msg.delete()
             if os.path.exists(output): os.remove(output)
         if DELETE_ORIGINAL: await event.delete()
     except Exception as e:
-        if msg: await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed")
+        if msg: await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {e}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
         except: pass
 
-# ===== WIZARD + COMMANDS v2.25.5a =====
+# ===== WIZARD + COMMANDS v2.25.5b =====
 @client.on(events.NewMessage(pattern=r'^/start'))
 async def start_handler(event):
     buttons = [
@@ -166,7 +170,7 @@ async def start_handler(event):
         [Button.inline('📝 File Name', b'setname'), Button.inline('📦 Zip Mode', b'zip')],
         [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel')]
     ]
-    await event.reply('**WMark Bot v2.25.5a**\nNeeche se setting select karo:', buttons=buttons)
+    await event.reply('**WMark Bot v2.25.5b**\nNeeche se setting select karo:', buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -306,7 +310,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.25.5a")
+    print("✅ Bot Online v2.25.5b")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
