@@ -26,7 +26,7 @@ PENDING_STATES = {}
 queue_messages = {}
 zip_queue_messages = {}
 
-# v2.24.10 Settings
+# v2.24.11 Settings
 CURRENT_WATERMARK = WATERMARK
 CURRENT_COLOR = "red@1"
 DELETE_ORIGINAL = False
@@ -71,7 +71,7 @@ async def process_video(event, user_id):
 
     try:
         q_pos = queue.qsize() + len(processing)
-        msg = await client.send_message(user_id, f"⏳ **Queue #{q_pos}**\nMode: {'No WM' if NO_WM_MODE else WATERMARK_MODE}")
+        msg = await client.send_message(user_id, f"⏳ **Queue #{q_pos}**")
         queue_messages[event.id] = msg.id
 
         file = await event.download_media(progress_callback=lambda c, t: progress_callback(c, t, msg, "📥 Downloading", event.id))
@@ -85,13 +85,12 @@ async def process_video(event, user_id):
             output = f"water_{event.id}.mp4"
 
         safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:").replace("%", "%%")
+        file_size_mb = os.path.getsize(file) / (1024*1024)
 
         if NO_WM_MODE:
             await msg.edit("📦 **No Watermark Mode**")
             shutil.copy(file, output)
         else:
-            await msg.edit("🎬 Watermark laga rahe... Thora time lagega")
-
             probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]
             probe = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
             stdout, _ = await probe.communicate()
@@ -114,16 +113,28 @@ async def process_video(event, user_id):
                 x_formula = f"{margin}"
                 y_formula = f"{margin}"
 
-            # v2.24.10 RAM FIX - threads 1 + ultrafast
             vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
 
-            cmd = [
-                'ffmpeg', '-threads', '1', '-i', file,
-                '-vf', vf_filter,
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-                '-c:a', 'copy',
-                output, '-y'
-            ]
+            # v2.24.11 SIZE FIX - 80MB se bari hai to compress
+            if file_size_mb > 80:
+                await msg.edit(f"🗜️ **Compressing...** `{file_size_mb:.1f}MB` > Target ~70MB")
+                cmd = [
+                    'ffmpeg', '-threads', '1', '-i', file,
+                    '-vf', f"scale=-2:720,{vf_filter}", # 1080p > 720p
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M',
+                    '-c:a', 'aac', '-b:a', '96k', # audio compress
+                    output, '-y'
+                ]
+            else:
+                await msg.edit("🎬 Watermark laga rahe...")
+                cmd = [
+                    'ffmpeg', '-threads', '1', '-i', file,
+                    '-vf', vf_filter,
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24',
+                    '-c:a', 'copy',
+                    output, '-y'
+                ]
+
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
 
@@ -139,9 +150,11 @@ async def process_video(event, user_id):
         else:
             if event.id in queue_messages:
                 await client.delete_messages(user_id, queue_messages[event.id])
+
+            final_size_mb = os.path.getsize(output) / (1024*1024)
             await client.send_file(
                 event.chat_id, output,
-                caption=f"✅ Done | {'No WM' if NO_WM_MODE else f'WM: {WATERMARK_MODE} Size: {final_size}px'}",
+                caption=f"✅ Done | Size: `{file_size_mb:.1f}MB` > `{final_size_mb:.1f}MB`",
                 reply_to=event.id,
                 force_document=True,
                 progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id)
@@ -185,7 +198,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.24.10 RAM FIX")
+    print("✅ Bot Online v2.24.11 SIZE FIX")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
