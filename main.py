@@ -110,16 +110,32 @@ async def process_video(event, user_id):
 
             vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
 
+            # ===== v2.25.5a: COMPRESS FIRST THEN WM =====
             if file_size_mb > 80:
-                await msg.edit(f"🗜️ **Compressing...** `{file_size_mb:.1f}MB` > ~70MB")
-                cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale=-2:720,{vf_filter}", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', output, '-y']
+                # STEP 1: Pehle 720p compress
+                await msg.edit(f"🗜️ **Step 1/2: Compressing to 720p...** `{file_size_mb:.1f}MB`")
+
+                temp_file = f"temp_{event.id}.mp4"
+                cmd1 = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale=-2:720", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', temp_file, '-y']
+                proc1 = await asyncio.create_subprocess_exec(*cmd1, stderr=asyncio.subprocess.PIPE)
+                _, _ = await proc1.communicate()
+                if proc1.returncode!= 0: raise Exception("FFmpeg Step 1 Error")
+
+                # STEP 2: Ab compress hui file pe WM lagao
+                await msg.edit("🎬 **Step 2/2: Watermark laga rahe...**")
+
+                cmd2 = ['ffmpeg', '-threads', '1', '-i', temp_file, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-c:a', 'copy', output, '-y']
+                proc2 = await asyncio.create_subprocess_exec(*cmd2, stderr=asyncio.subprocess.PIPE)
+                _, _ = await proc2.communicate()
+                if proc2.returncode!= 0: raise Exception("FFmpeg Step 2 Error")
+
+                if os.path.exists(temp_file): os.remove(temp_file) # temp delete
             else:
                 await msg.edit("🎬 Watermark laga rahe...")
                 cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-c:a', 'copy', output, '-y']
-
-            proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
-            _, stderr = await proc.communicate()
-            if proc.returncode!= 0: raise Exception(f"FFmpeg Error")
+                proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
+                _, stderr = await proc.communicate()
+                if proc.returncode!= 0: raise Exception(f"FFmpeg Error")
 
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
@@ -138,7 +154,7 @@ async def process_video(event, user_id):
             if file and os.path.exists(file): os.remove(file)
         except: pass
 
-# ===== WIZARD + COMMANDS v2.25.4 =====
+# ===== WIZARD + COMMANDS v2.25.5a =====
 @client.on(events.NewMessage(pattern=r'^/start'))
 async def start_handler(event):
     buttons = [
@@ -150,7 +166,7 @@ async def start_handler(event):
         [Button.inline('📝 File Name', b'setname'), Button.inline('📦 Zip Mode', b'zip')],
         [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel')]
     ]
-    await event.reply('**WMark Bot v2.25.4 Wizard**\nNeeche se setting select karo:', buttons=buttons)
+    await event.reply('**WMark Bot v2.25.5a**\nNeeche se setting select karo:', buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -160,9 +176,9 @@ async def callback_handler(event):
 
     if data == 'login': await event.respond('🔑 Password bhejo: `/login password`')
     elif data == 'logout': AUTHORIZED_USERS.discard(user_id); await event.respond('✅ Logged Out')
-    elif data == 'current': 
+    elif data == 'current':
         await event.respond(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
-    elif data == 'help': 
+    elif data == 'help':
         await event.respond("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel")
     elif data == 'set': PENDING_STATES[user_id] = 'set'; await event.respond('Please enter watermark text')
     elif data == 'color': PENDING_STATES[user_id] = 'color'; await event.respond('Color Examples:\nred@1 = Red\nwhite@1 = White\nyellow@0.9 = Yellow 90%')
@@ -191,9 +207,8 @@ async def pending_handler(event):
         elif state == 'setname': NAME_MODE = text; CUSTOM_PREFIX = "wm_" if text=="custom" else ""; await event.reply(f'Name: {text}')
         elif state == 'delete': DELETE_ORIGINAL = text.lower() == 'on'; await event.reply(f'Delete: {DELETE_ORIGINAL}')
 
-# Direct Command Handlers - Screenshot Format
 @client.on(events.NewMessage(pattern=r'^/help'))
-async def help_handler(event): 
+async def help_handler(event):
     await event.reply("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel")
 
 @client.on(events.NewMessage(pattern=r'^/current'))
@@ -291,7 +306,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.25.4")
+    print("✅ Bot Online v2.25.5a")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
