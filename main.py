@@ -13,7 +13,7 @@ BOT_PASSWORD = os.environ.get("BOT_PASSWORD")
 
 WATERMARK = os.environ.get("WATERMARK", "@bvsrv1")
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "1"))
-MAX_SIZE_MB = 180
+MAX_SIZE_MB = 180 # Yahi limit hai
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
@@ -160,31 +160,44 @@ async def process_video(event, user_id):
             if file and os.path.exists(file): os.remove(file)
         except: pass
 
-# ===== WIZARD + COMMANDS v2.25.11b =====
+# ===== WIZARD + COMMANDS v2.25.13b =====
 @client.on(events.NewMessage(pattern=r'^/start'))
 async def start_handler(event):
     buttons = [
         [Button.inline('🔑 Bot Login', b'login'), Button.inline('🔒 Logout', b'logout')],
         [Button.inline('📊 Current Settings', b'current'), Button.inline('📖 Help', b'help')],
         [Button.inline('✏️ Set WM Text', b'set'), Button.inline('🎨 Set Color', b'color')],
-        [Button.inline('📐 WM Size %', b'wmpercent'), Button.inline('🔄 WM Mode', b'wmmode')],
-        [Button.inline('🚫 No WM', b'nowm'), Button.inline('🗑️ Delete Orig', b'delete')],
-        [Button.inline('📝 File Name', b'setname'), Button.inline('📦 Zip Mode', b'zip')],
-        [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel_menu')]
+        [Button.inline('📐 WM Size %', b'wmpercent'), Button.inline('📏 Set Limit', b'limit')],
+        [Button.inline('🔄 WM Mode', b'wmmode'), Button.inline('🚫 No WM', b'nowm')],
+        [Button.inline('🗑️ Delete Orig', b'delete'), Button.inline('📝 File Name', b'setname')],
+        [Button.inline('📦 Zip Mode', b'zip'), Button.inline('⬇️ Create Zip', b'zipnow')],
+        [Button.inline('❌ Cancel Queue', b'cancel_menu')]
     ]
-    await event.reply('**WMark Bot v2.25.11b**\nNeeche se setting select karo:', buttons=buttons)
+    await event.reply('**WMark Bot v2.25.13b**\nNeeche se setting select karo:', buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
     data = event.data.decode('utf-8')
     user_id = event.sender_id
-    global WATERMARK_MODE, NO_WM_MODE, DELETE_ORIGINAL, ZIP_MODE, CURRENT_WATERMARK, CURRENT_COLOR, WM_PERCENT, NAME_MODE, CUSTOM_PREFIX
+    global WATERMARK_MODE, NO_WM_MODE, DELETE_ORIGINAL, ZIP_MODE, CURRENT_WATERMARK, CURRENT_COLOR, WM_PERCENT, NAME_MODE, CUSTOM_PREFIX, MAX_SIZE_MB
 
     if data == 'login': await event.respond('🔑 Password bhejo: `/login password`')
     elif data == 'logout': AUTHORIZED_USERS.discard(user_id); await event.respond('✅ Logged Out')
-    elif data == 'current': await event.respond(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
-    elif data == 'help': await event.respond("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel /cancel all /cancel 1")
+    elif data == 'current': await event.respond(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nLimit: {MAX_SIZE_MB}MB\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
+    elif data == 'help': await event.respond("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05 /limit 500\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel /cancel all /cancel 1")
     elif data == 'cancel_menu': await show_cancel_menu(event, user_id)
+    elif data == 'limit': PENDING_STATES[user_id] = 'limit'; await event.respond('Enter new limit in MB. Example: 500')
+    elif data.startswith('allow_'):
+        event_id = int(data.split('_')[1])
+        video_event = PENDING_STATES.pop(f"video_{event_id}", None)
+        if video_event:
+            await event.edit("✅ Allowed! Queue mai daal diya")
+            await queue.put((video_event, event.sender_id))
+        else:
+            await event.edit("❌ Video expired")
+    elif data.startswith('reject_'):
+        PENDING_STATES.pop(f"video_{data.split('_')[1]}", None)
+        await event.edit("🚫 Rejected by user")
     elif data.startswith('cancel_'):
         action = data.split('_')[1]
         await handle_cancel_action(event, user_id, action)
@@ -246,20 +259,21 @@ async def pending_handler(event):
     if user_id in PENDING_STATES:
         state = PENDING_STATES.pop(user_id)
         text = event.text
-        global CURRENT_WATERMARK, WM_PERCENT, NAME_MODE, CUSTOM_PREFIX, CURRENT_COLOR, DELETE_ORIGINAL
+        global CURRENT_WATERMARK, WM_PERCENT, NAME_MODE, CUSTOM_PREFIX, CURRENT_COLOR, DELETE_ORIGINAL, MAX_SIZE_MB
         if state == 'set': CURRENT_WATERMARK = text; await event.reply(f'✅ Watermark Updated\n{text}')
         elif state == 'color': CURRENT_COLOR = text; await event.reply(f'✅ Watermark Color: {text}')
         elif state == 'wmpercent': WM_PERCENT = float(text); await event.reply(f'WM Size%: {text}')
+        elif state == 'limit': MAX_SIZE_MB = int(text); await event.reply(f'✅ Size Limit: {text}MB')
         elif state == 'setname': NAME_MODE = text; CUSTOM_PREFIX = "wm_" if text=="custom" else ""; await event.reply(f'Name: {text}')
         elif state == 'delete': DELETE_ORIGINAL = text.lower() == 'on'; await event.reply(f'Delete: {DELETE_ORIGINAL}')
 
 @client.on(events.NewMessage(pattern=r'^/help'))
-async def help_handler(event): await event.reply("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel /cancel all /cancel 1")
+async def help_handler(event): await event.reply("Commands:\n/login pass /logout /current\n/set text /color red@1 /wmpercent 0.05 /limit 500\n/wmmode /nowm /delete /setname mode\n/zip /zipnow /cancel /cancel all /cancel 1")
 
 @client.on(events.NewMessage(pattern=r'^/current'))
 async def current_handler(event):
     if event.sender_id not in AUTHORIZED_USERS: return
-    await event.reply(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
+    await event.reply(f"Current Settings:\nWM: {CURRENT_WATERMARK}\nColor: {CURRENT_COLOR}\nMode: {WATERMARK_MODE}\nSize%: {WM_PERCENT}\nLimit: {MAX_SIZE_MB}MB\nZip: {ZIP_MODE}\nNoWM: {NO_WM_MODE}\nDelete: {DELETE_ORIGINAL}\nName: {NAME_MODE}")
 
 @client.on(events.NewMessage(pattern=r'^/login (.+)'))
 async def login_handler(event):
@@ -293,6 +307,16 @@ async def color_no_arg(event):
 async def wmpercent_handler(event):
     if event.sender_id not in AUTHORIZED_USERS: return
     global WM_PERCENT; WM_PERCENT = float(event.text.split(maxsplit=1)[1]); await event.reply(f'WM Size%: {WM_PERCENT}')
+
+@client.on(events.NewMessage(pattern=r'^/limit (.+)'))
+async def limit_handler(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    global MAX_SIZE_MB; MAX_SIZE_MB = int(event.text.split(maxsplit=1)[1]); await event.reply(f'✅ Size Limit: {MAX_SIZE_MB}MB')
+
+@client.on(events.NewMessage(pattern=r'^/limit$'))
+async def limit_no_arg(event):
+    if event.sender_id not in AUTHORIZED_USERS: return
+    PENDING_STATES[event.sender_id] = 'limit'; await event.reply('Enter new limit in MB. Example: 500')
 
 @client.on(events.NewMessage(pattern=r'^/wmmode'))
 async def wmmode_handler(event):
@@ -368,14 +392,26 @@ async def zip_handler(event):
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
 async def handle_video(event):
     if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 /login password')
-    if event.file and event.file.size > MAX_SIZE_MB * 1024 * 1024:
-        return await event.reply(f"🚫 Video too large\nSize: `{event.file.size / (1024*1024):.1f}MB`\nLimit: `{MAX_SIZE_MB}MB`")
+    file_size_mb = event.file.size / (1024*1024)
+
+    if file_size_mb > MAX_SIZE_MB:
+        buttons = [
+            [Button.inline(f'✅ Allow & Compress - {file_size_mb:.1f}MB', f'allow_{event.id}'.encode())],
+            [Button.inline('❌ Reject', f'reject_{event.id}'.encode())]
+        ]
+        await event.reply(
+            f"🚫 **Video too large**\nSize: `{file_size_mb:.1f}MB`\nLimit: `{MAX_SIZE_MB}MB`\n\nKya karna hai?",
+            buttons=buttons
+        )
+        PENDING_STATES[f"video_{event.id}"] = event
+        return
+
     await queue.put((event, event.sender_id))
 
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.25.11b")
+    print("✅ Bot Online v2.25.13b")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
