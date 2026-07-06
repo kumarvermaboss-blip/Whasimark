@@ -26,9 +26,8 @@ PENDING_STATES = {}
 queue_messages = {}
 zip_queue_messages = {}
 
-# Settings v2.24.5 - Default Red
 CURRENT_WATERMARK = WATERMARK
-CURRENT_COLOR = "red@1" # <-- DEFAULT RED KAR DIYA
+CURRENT_COLOR = "white@0.7" # aapka color
 DELETE_ORIGINAL = False
 NAME_MODE = "water_id"
 CUSTOM_PREFIX = "wm_"
@@ -50,9 +49,7 @@ async def worker():
             try:
                 await process_video(event, user_id)
             except Exception as e:
-                if event.id not in cancel_flags and "Cancelled" not in str(e):
-                    try: await event.reply(f"❌ Error: {str(e)[:500]}")
-                    except: pass
+                print(f"WORKER ERROR: {e}")
             finally:
                 processing.discard(event.id)
                 if event.id in cancel_flags: del cancel_flags[event.id]
@@ -88,7 +85,7 @@ async def process_video(event, user_id):
         else:
             output = f"water_{event.id}.mp4"
 
-        safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:").replace("%", "%%").replace("[", "\\[").replace("]", "\\]")
+        safe_watermark = CURRENT_WATERMARK.replace("'", "\\'").replace(":", "\\:").replace("%", "%%")
 
         if NO_WM_MODE:
             await msg.edit("📦 **No Watermark Mode**")
@@ -127,26 +124,21 @@ async def process_video(event, user_id):
             if proc.returncode!= 0:
                 error_text = stderr.decode()
                 print(f"FFMPEG FULL ERROR: {error_text}")
-                raise Exception(f"FFmpeg failed: {error_text}")
+                # YAHAN FIX HAI - sirf pehli line bhejo
+                first_line = error_text.split('\n')[0][:200]
+                raise Exception(f"FFmpeg Error: {first_line}")
 
         if ZIP_MODE:
             ZIP_QUEUE.append(output)
-            wm_status = "No WM" if NO_WM_MODE else f"WM: {WATERMARK_MODE} {int(WM_PERCENT*100)}%"
-            msg2 = await event.reply(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}` videos\nMode: `{wm_status}`")
-            if user_id not in zip_queue_messages: zip_queue_messages[user_id] = []
-            zip_queue_messages[user_id].append(msg2.id)
+            await event.reply(f"📦 **Added to Zip Queue**\nTotal: `{len(ZIP_QUEUE)}`")
             if event.id in queue_messages:
                 await client.delete_messages(user_id, queue_messages[event.id])
-                del queue_messages[event.id]
-            if len(ZIP_QUEUE) >= 10:
-                await create_and_send_zip(event.chat_id, username, user_id)
         else:
             if event.id in queue_messages:
                 await client.delete_messages(user_id, queue_messages[event.id])
-                del queue_messages[event.id]
             await client.send_file(
                 event.chat_id, output,
-                caption=f"✅ Done | {'No WM' if NO_WM_MODE else f'WM: {WATERMARK_MODE} Size: {final_size}px Color: {CURRENT_COLOR}'}",
+                caption=f"✅ Done | WM: {WATERMARK_MODE} Size: {final_size}px Color: {CURRENT_COLOR}",
                 reply_to=event.id,
                 force_document=True,
                 progress_callback=lambda c, t: progress_callback(c, t, msg, "📤 Uploading", event.id)
@@ -157,37 +149,13 @@ async def process_video(event, user_id):
         if DELETE_ORIGINAL: await event.delete()
 
     except Exception as e:
-        if msg: await msg.edit("🚫 Cancelled" if "Cancelled" in str(e) else f"❌ Failed: {str(e)}")
+        if msg:
+            err = str(e)[:200] # 200 char limit
+            await msg.edit(f"❌ Failed: {err}")
     finally:
         try:
             if file and os.path.exists(file): os.remove(file)
         except: pass
-
-async def create_and_send_zip(chat_id, username, user_id):
-    global ZIP_QUEUE
-    if len(ZIP_QUEUE) == 0: return
-    zip_name = f"Watermarked_{datetime.now().strftime('%d-%m-%Y_%H-%M')}.zip"
-    msg = await client.send_message(chat_id, f"📦 **Zip bana raha hun... {len(ZIP_QUEUE)} videos**")
-    with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for video in ZIP_QUEUE:
-            if os.path.exists(video): zipf.write(video, os.path.basename(video))
-    total = len(ZIP_QUEUE)
-    mode = 'No WM' if NO_WM_MODE else f"{WATERMARK_MODE} {int(WM_PERCENT*100)}%"
-    if user_id in zip_queue_messages and zip_queue_messages[user_id]:
-        try: await client.delete_messages(chat_id, zip_queue_messages[user_id])
-        except: pass
-        del zip_queue_messages[user_id]
-    await client.send_file(chat_id, zip_name, caption=f"📦 **Zip Ready**\nTotal: `{total}` videos\nMode: `{mode}`", force_document=True)
-    await msg.delete()
-    if BACKUP_CHANNEL:
-        try:
-            backup_caption = f"📦 **New Zip Backup**\n**User:** {username}\n**Total:** {total}\n**Mode:** {mode}"
-            await client.send_file(BACKUP_CHANNEL, zip_name, caption=backup_caption)
-        except Exception as e: print(f"❌ Backup Error: {e}")
-    for video in ZIP_QUEUE:
-        if os.path.exists(video): os.remove(video)
-    if os.path.exists(zip_name): os.remove(zip_name)
-    ZIP_QUEUE = []
 
 @client.on(events.NewMessage(pattern=r'^/login'))
 async def login_handler(event):
@@ -198,172 +166,8 @@ async def login_handler(event):
         return
     if parts[1] == BOT_PASSWORD:
         AUTHORIZED_USERS.add(event.sender_id)
-        await event.reply('✅ **Login Success!**\n\n`/help` for commands')
+        await event.reply('✅ **Login Success!**')
     else: await event.reply('❌ Galat password.')
-
-@client.on(events.NewMessage(pattern=r'^/logout'))
-async def logout_handler(event):
-    if event.sender_id in AUTHORIZED_USERS:
-        AUTHORIZED_USERS.remove(event.sender_id)
-        await event.reply('✅ **Logout Success**')
-    else: await event.reply('❌ Pehle login hi nahi kiya')
-
-@client.on(events.NewMessage(pattern=r'^/set'))
-async def set_handler(event):
-    global CURRENT_WATERMARK
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    parts = event.text.split(maxsplit=1)
-    if len(parts) > 1:
-        CURRENT_WATERMARK = parts[1].strip()
-        await event.reply(f"✅ **Watermark Updated**\n`{CURRENT_WATERMARK}`")
-    else:
-        PENDING_STATES[event.sender_id] = "set"
-        await event.reply("Please enter watermark text")
-
-@client.on(events.NewMessage(pattern=r'^/color'))
-async def color_handler(event):
-    global CURRENT_COLOR
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    parts = event.text.split(maxsplit=1)
-    if len(parts) > 1:
-        CURRENT_COLOR = parts[1].strip()
-        await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
-    else:
-        await event.reply("**Color Examples:**\n`red@1` = Red\n`white@1` = White\n`yellow@0.9` = Yellow 90%")
-
-@client.on(events.NewMessage(pattern=r'^/wmpercent'))
-async def wmpercent_handler(event):
-    global WM_PERCENT
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    parts = event.text.split(maxsplit=1)
-    if len(parts) > 1:
-        try:
-            percent = float(parts[1])
-            if 0.01 <= percent <= 0.20:
-                WM_PERCENT = percent
-                await event.reply(f"✅ **WM Size:** `{int(WM_PERCENT*100)}%`")
-            else: await event.reply("❌ 0.01 se 0.20 ke beech me rakho")
-        except: await event.reply("❌ Usage: `/wmpercent 0.05`")
-    else:
-        PENDING_STATES[event.sender_id] = "wmpercent"
-        await event.reply("Enter %: `0.05` = 5%")
-
-@client.on(events.NewMessage(pattern=r'^/wmmode'))
-async def wmmode_handler(event):
-    global WATERMARK_MODE
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    WATERMARK_MODE = "static" if WATERMARK_MODE == "bouncing" else "bouncing"
-    await event.reply(f"✅ **Watermark Mode: {WATERMARK_MODE.title()}**")
-
-@client.on(events.NewMessage(pattern=r'^/nowm'))
-async def nowm_toggle(event):
-    global NO_WM_MODE
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    NO_WM_MODE = not NO_WM_MODE
-    await event.reply(f"✅ **No Watermark Mode: {'ON' if NO_WM_MODE else 'OFF'}**")
-
-@client.on(events.NewMessage(pattern=r'^/delete'))
-async def delete_handler(event):
-    global DELETE_ORIGINAL
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    parts = event.text.split(maxsplit=1)
-    if len(parts) > 1:
-        DELETE_ORIGINAL = True if parts[1].lower() == 'on' else False
-        await event.reply(f"✅ **Delete Original: {DELETE_ORIGINAL}**")
-    else:
-        PENDING_STATES[event.sender_id] = "delete"
-        await event.reply("Enter `on` or `off`")
-
-@client.on(events.NewMessage(pattern=r'^/setname'))
-async def setname_handler(event):
-    global NAME_MODE, CUSTOM_PREFIX
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    parts = event.text.split(maxsplit=1)
-    if len(parts) > 1:
-        val = parts[1].strip()
-        if val == "original": NAME_MODE = "original"; await event.reply("✅ **Name Mode:** Original")
-        elif val == "water_id": NAME_MODE = "water_id"; await event.reply("✅ **Name Mode:** water_id")
-        elif val.startswith("custom"): CUSTOM_PREFIX = val[7:].strip() if len(val) > 6 else "wm_"; NAME_MODE = "custom"; await event.reply(f"✅ **Custom Prefix:** `{CUSTOM_PREFIX}`")
-    else:
-        PENDING_STATES[event.sender_id] = "setname"
-        await event.reply("Enter: `original`, `water_id`, ya `custom Prefix_`")
-
-@client.on(events.NewMessage(pattern=r'^/zip$'))
-async def zip_toggle(event):
-    global ZIP_MODE
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    ZIP_MODE = not ZIP_MODE
-    await event.reply(f"✅ **Zip Mode: {'ON' if ZIP_MODE else 'OFF'}**")
-
-@client.on(events.NewMessage(pattern=r'^/zipnow$'))
-async def zip_now(event):
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    if len(ZIP_QUEUE) == 0: return await event.reply("❌ **Zip Queue khali hai**")
-    user = await client.get_entity(event.sender_id)
-    username = f"@{user.username}" if user.username else f"{user.first_name}"
-    await event.reply(f"⏳ **{len(ZIP_QUEUE)} videos ki zip bana raha hun...**")
-    await create_and_send_zip(event.chat_id, username, event.sender_id)
-
-@client.on(events.NewMessage(pattern=r'^/cancel'))
-async def cancel_handler(event):
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    if event.is_reply:
-        cancel_flags[(await event.get_reply_message()).id] = True
-        return await event.reply("🚫 **Cancelling this video...**")
-    count = 0
-    while not queue.empty():
-        try: cancel_flags[queue.get_nowait()[0].id] = True; count += 1; queue.task_done()
-        except: break
-    for pid in list(processing): cancel_flags[pid] = True; count += 1
-    await event.reply(f"🚫 **Cancelled {count} videos**" if count > 0 else "❌ **No videos in queue**")
-
-@client.on(events.NewMessage(pattern=r'^/current'))
-async def current_handler(event):
-    if event.sender_id not in AUTHORIZED_USERS: return await event.reply('🔒 Pehle /login karo')
-    await event.reply(
-        f"**📊 Settings v2.24.5:**\n\n"
-        f"**Watermark:** `{CURRENT_WATERMARK}`\n"
-        f"**WM Mode:** `{WATERMARK_MODE}`\n"
-        f"**WM Size:** `{int(WM_PERCENT*100)}%`\n"
-        f"**Color:** `{CURRENT_COLOR}`\n"
-        f"**Zip Mode:** `{'ON' if ZIP_MODE else 'OFF'}`"
-    )
-
-@client.on(events.NewMessage(pattern=r'^/help|^/start'))
-async def help_handler(event):
-    await event.reply(
-        "**🔥 Text Watermark Bot v2.24.5**\n\n"
-        "**🔐 Auth:** `/login` `/logout`\n"
-        "**⚙️ Settings:** `/set` `/color` `/wmpercent` `/wmmode` `/nowm`\n"
-        "**📁 File:** `/delete` `/setname`\n"
-        "**📦 Zip:** `/zip` `/zipnow`\n"
-        "**📋 Queue:** `/cancel` `/current`\n\n"
-        "**Default Color:** `red@1`\nWhite ke liye: `/color white@1`"
-    )
-
-@client.on(events.NewMessage(func=lambda e: e.sender_id in PENDING_STATES and not e.text.startswith('/')))
-async def input_handler(event):
-    global CURRENT_WATERMARK, DELETE_ORIGINAL, NAME_MODE, CUSTOM_PREFIX, CURRENT_COLOR, WM_PERCENT
-    if event.sender_id not in PENDING_STATES: return
-    state = PENDING_STATES.pop(event.sender_id)
-    txt = event.text.strip()
-    if state == "set": CURRENT_WATERMARK = txt; await event.reply(f"✅ **Watermark Updated**\n`{txt}`")
-    elif state == "delete": DELETE_ORIGINAL = True if txt.lower() == 'on' else False; await event.reply(f"✅ **Delete Original: {DELETE_ORIGINAL}**")
-    elif state == "color": CURRENT_COLOR = txt; await event.reply(f"✅ **Watermark Color:** `{CURRENT_COLOR}`")
-    elif state == "wmpercent":
-        try:
-            percent = float(txt)
-            if 0.01 <= percent <= 0.20: WM_PERCENT = percent; await event.reply(f"✅ **WM Size:** `{int(WM_PERCENT*100)}%`")
-            else: await event.reply("❌ 0.01 se 0.20 ke beech me rakho")
-        except: await event.reply("❌ Number bhejo")
-    elif state == "setname":
-        if txt == "original": NAME_MODE = "original"; await event.reply("✅ **Name Mode:** Original")
-        elif txt == "water_id": NAME_MODE = "water_id"; await event.reply("✅ **Name Mode:** water_id")
-        elif txt.startswith("custom"): CUSTOM_PREFIX = txt[7:].strip() if len(txt) > 6 else "wm_"; NAME_MODE = "custom"; await event.reply(f"✅ **Custom Prefix:** `{CUSTOM_PREFIX}`")
-    elif state == "login":
-        if txt == BOT_PASSWORD: AUTHORIZED_USERS.add(event.sender_id); await event.reply('✅ **Login Success!**')
-        else: await event.reply('❌ Galat password.')
-    await event.delete()
 
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
 async def handle_video(event):
@@ -372,7 +176,7 @@ async def handle_video(event):
     await queue.put((event, event.sender_id))
 
 async def main():
-    print("BOT STARTED v2.24.5 - Default Red Color")
+    print("BOT STARTED v2.24.8 - Error Length Fix")
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
     print("✅ Bot Online!")
