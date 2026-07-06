@@ -91,7 +91,7 @@ async def process_video(event, user_id):
             stdout, _ = await probe.communicate()
             w, h = map(int, stdout.decode().strip().split('x'))
 
-            # ===== v2.25.4 UPDATED FIX =====
+            # ===== v2.25.4b LOGIC =====
             if file_size_mb > 80:
                 # >80MB: Pehle 720p Scale karo, phir usi pe WM lagao
                 await msg.edit(f"🗜️ **Compressing 720p + WM...** `{file_size_mb:.1f}MB`")
@@ -120,8 +120,8 @@ async def process_video(event, user_id):
                 cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', f"scale={scale_w}:{scale_h},{vf_filter}", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-maxrate', '2M', '-bufsize', '4M', '-c:a', 'aac', '-b:a', '96k', output, '-y']
 
             else:
-                # <80MB: Direct WM, koi compress nahi
-                await msg.edit("🎬 Watermark laga rahe... Quality High")
+                # <80MB: Direct WM. Size pehle jesa
+                await msg.edit("🎬 Watermark laga rahe...")
 
                 dynamic_size = int(w * WM_PERCENT)
                 final_size = max(20, min(150, dynamic_size))
@@ -141,7 +141,7 @@ async def process_video(event, user_id):
                     y_formula = f"{margin}"
 
                 vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
-                cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-c:a', 'copy', output, '-y']
+                cmd = ['ffmpeg', '-threads', '1', '-i', file, '-vf', vf_filter, '-c:v', 'libx264', '-preset', 'faster', '-crf', '23', '-c:a', 'copy', output, '-y']
 
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
@@ -175,7 +175,7 @@ async def start_handler(event):
         [Button.inline('📝 File Name', b'setname'), Button.inline('📦 Zip Mode', b'zip')],
         [Button.inline('⬇️ Create Zip', b'zipnow'), Button.inline('❌ Cancel Queue', b'cancel')]
     ]
-    await event.reply('**WMark Bot v2.25.4 Updated**\nNeeche se setting select karo:', buttons=buttons)
+    await event.reply('**WMark Bot v2.25.4b**\nNeeche se setting select karo:', buttons=buttons)
 
 @client.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -315,7 +315,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.25.4 Updated")
+    print("✅ Bot Online v2.25.4b")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
