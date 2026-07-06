@@ -26,7 +26,7 @@ PENDING_STATES = {}
 queue_messages = {}
 zip_queue_messages = {}
 
-# v2.24.9 Settings
+# v2.24.10 Settings
 CURRENT_WATERMARK = WATERMARK
 CURRENT_COLOR = "red@1"
 DELETE_ORIGINAL = False
@@ -59,7 +59,7 @@ async def worker():
 async def progress_callback(current, total, msg, action, event_id):
     if event_id in cancel_flags: raise Exception("Cancelled by user")
     percent = int(current * 100 / total)
-    if percent % 25 == 0 or percent == 100:
+    if percent % 20 == 0 or percent == 100:
         try: await msg.edit(f"{action} {percent}%")
         except: pass
 
@@ -90,7 +90,7 @@ async def process_video(event, user_id):
             await msg.edit("📦 **No Watermark Mode**")
             shutil.copy(file, output)
         else:
-            await msg.edit("🎬 Watermark laga rahe...")
+            await msg.edit("🎬 Watermark laga rahe... Thora time lagega")
 
             probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', file]
             probe = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
@@ -114,17 +114,23 @@ async def process_video(event, user_id):
                 x_formula = f"{margin}"
                 y_formula = f"{margin}"
 
-            # YAHAN FIX HAI - Local font file use ho rahi
+            # v2.24.10 RAM FIX - threads 1 + ultrafast
             vf_filter = f"drawtext=fontfile=./DejaVuSans.ttf:text='{safe_watermark}':fontsize={final_size}:fontcolor={CURRENT_COLOR}:x='{x_formula}':y='{y_formula}'"
 
-            cmd = ['ffmpeg', '-i', file, '-vf', vf_filter, '-c:a', 'copy', output, '-y']
+            cmd = [
+                'ffmpeg', '-threads', '1', '-i', file,
+                '-vf', vf_filter,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+                '-c:a', 'copy',
+                output, '-y'
+            ]
             proc = await asyncio.create_subprocess_exec(*cmd, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()
 
             if proc.returncode!= 0:
                 error_text = stderr.decode()
                 print(f"FFMPEG ERROR: {error_text}")
-                first_line = error_text.split('\n')[0][:200]
+                first_line = error_text.split('\n')[0][:300]
                 raise Exception(f"FFmpeg Error: {first_line}")
 
         if ZIP_MODE:
@@ -163,6 +169,13 @@ async def login_handler(event):
         await event.reply('✅ **Login Success!**')
     else: await event.reply('❌ Galat password.')
 
+@client.on(events.NewMessage(pattern=r'^/nowm'))
+async def nowm_handler(event):
+    global NO_WM_MODE
+    if event.sender_id not in AUTHORIZED_USERS: return
+    NO_WM_MODE = not NO_WM_MODE
+    await event.reply(f"✅ **No WM Mode:** `{NO_WM_MODE}`")
+
 @client.on(events.NewMessage(func=lambda e: e.video or (e.document and e.document.mime_type and e.document.mime_type.startswith('video/'))))
 async def handle_video(event):
     if event.sender_id not in AUTHORIZED_USERS:
@@ -172,7 +185,7 @@ async def handle_video(event):
 async def main():
     for _ in range(MAX_CONCURRENT): asyncio.create_task(worker())
     await client.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online v2.24.9")
+    print("✅ Bot Online v2.24.10 RAM FIX")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
